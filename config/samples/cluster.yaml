@@ -1,0 +1,25 @@
+apiVersion: dstore.amber-store.io/v1alpha1
+kind: DstoreCluster
+metadata:
+  name: demo
+spec:
+  nodes: 3
+  replicas: 3
+  image: ghcr.io/amber-store/dstore:latest
+  capacityGiB: 100
+  gcInterval: 4h
+  storage:
+    volumeClaimTemplate:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 100Gi
+    paxosVolumeClaimTemplate:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
