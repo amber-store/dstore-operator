@@ -25,7 +25,6 @@ const (
 	SecretKeySeed     = "seed"
 
 	storeMount = "/data"
-	paxosMount = "/paxos"
 )
 
 // Node roles the entrypoint understands.
@@ -47,8 +46,6 @@ func joinSecretName(c *dstorev1.DstoreCluster, i int32) string {
 }
 
 func pvcName(c *dstorev1.DstoreCluster, i int32) string { return nodeName(c, i) + "-store" }
-
-func paxosPVCName(c *dstorev1.DstoreCluster, i int32) string { return nodeName(c, i) + "-paxos" }
 
 func nodeLabels(c *dstorev1.DstoreCluster, i int32) map[string]string {
 	return map[string]string{LabelApp: AppName, LabelCluster: c.Name, LabelNode: strconv.Itoa(int(i))}
@@ -139,11 +136,6 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 
 	volumes := []corev1.Volume{{Name: "store", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName(c, i)}}}}
 	mounts := []corev1.VolumeMount{{Name: "store", MountPath: storeMount}}
-	if c.Spec.Storage.PaxosVolumeClaimTemplate != nil {
-		volumes = append(volumes, corev1.Volume{Name: "paxos", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: paxosPVCName(c, i)}}})
-		mounts = append(mounts, corev1.VolumeMount{Name: "paxos", MountPath: paxosMount})
-		env = append(env, corev1.EnvVar{Name: "DSTORE_PAXOS_DIR", Value: paxosMount})
-	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName(c, i), Namespace: c.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{

@@ -7,12 +7,10 @@ import (
 
 // StorageSpec describes the volumes of a node.
 type StorageSpec struct {
-	// VolumeClaimTemplate is the claim created for each node's store
-	// (packstore, meta, identity). Required.
+	// VolumeClaimTemplate is the claim created for each node's store:
+	// packstore, meta, identity and the acceptor state all live on it.
+	// Required.
 	VolumeClaimTemplate corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplate"`
-	// PaxosVolumeClaimTemplate, when set, gives each node a separate
-	// claim for its acceptor state, as the design recommends.
-	PaxosVolumeClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"paxosVolumeClaimTemplate,omitempty"`
 	// DeleteVolumesOnScaleDown removes a removed node's claims once the
 	// cluster has moved its data. Default false: claims are kept.
 	DeleteVolumesOnScaleDown bool `json:"deleteVolumesOnScaleDown,omitempty"`

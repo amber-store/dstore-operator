@@ -73,9 +73,6 @@ spec:
                     volumeClaimTemplate:
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
-                    paxosVolumeClaimTemplate:
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
                     deleteVolumesOnScaleDown:
                       type: boolean
                 zones:

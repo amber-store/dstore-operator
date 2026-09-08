@@ -394,15 +394,10 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, c *dstorev1.DstoreClu
 	return r.Create(ctx, d)
 }
 
-// ensureNode creates a node's claims and Deployment.
+// ensureNode creates a node's claim and Deployment.
 func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCluster, in *nodeInfo, role string) error {
 	if err := r.ensurePVC(ctx, c, in.index, pvcName(c, in.index), c.Spec.Storage.VolumeClaimTemplate); err != nil {
 		return err
-	}
-	if c.Spec.Storage.PaxosVolumeClaimTemplate != nil {
-		if err := r.ensurePVC(ctx, c, in.index, paxosPVCName(c, in.index), *c.Spec.Storage.PaxosVolumeClaimTemplate); err != nil {
-			return err
-		}
 	}
 	d := desiredDeployment(c, in.index, in.addr, role)
 	if err := controllerutil.SetControllerReference(c, d, r.Scheme()); err != nil {
@@ -462,10 +457,7 @@ func (r *ClusterReconciler) deleteNode(ctx context.Context, c *dstorev1.DstoreCl
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: identitySecretName(c, i), Namespace: c.Namespace}},
 	}
 	if volumes {
-		objs = append(objs,
-			&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName(c, i), Namespace: c.Namespace}},
-			&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: paxosPVCName(c, i), Namespace: c.Namespace}},
-		)
+		objs = append(objs, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName(c, i), Namespace: c.Namespace}})
 	}
 	for _, o := range objs {
 		if err := r.Delete(ctx, o); err != nil && !apierrors.IsNotFound(err) {

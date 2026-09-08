@@ -10,10 +10,6 @@ import (
 func (in *StorageSpec) DeepCopyInto(out *StorageSpec) {
 	*out = *in
 	in.VolumeClaimTemplate.DeepCopyInto(&out.VolumeClaimTemplate)
-	if in.PaxosVolumeClaimTemplate != nil {
-		out.PaxosVolumeClaimTemplate = new(corev1.PersistentVolumeClaimSpec)
-		in.PaxosVolumeClaimTemplate.DeepCopyInto(out.PaxosVolumeClaimTemplate)
-	}
 }
 
 // DeepCopyInto copies the receiver into out.

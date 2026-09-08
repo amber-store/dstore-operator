@@ -15,11 +15,6 @@ spec:
       resources:
         requests:
           storage: 100Gi
-    paxosVolumeClaimTemplate:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 5Gi
   resources:
     requests:
       cpu: 500m

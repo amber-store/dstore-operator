@@ -15,8 +15,8 @@ creates:
   operator, so node ids and tickets are known before a pod runs);
 - a **Service** (ClusterIP, UDP) that the node advertises as its
   address, so restarts and rescheduling keep addresses stable;
-- a **PersistentVolumeClaim** from `storage.volumeClaimTemplate` (and one
-  from `paxosVolumeClaimTemplate` when given, for the acceptor state);
+- a **PersistentVolumeClaim** from `storage.volumeClaimTemplate`, holding
+  the packstore, the meta database, the identity and the acceptor state;
 - a **Deployment** (one replica, `Recreate`) running the node image with
   the identity, address, weight and role in its environment.
 
@@ -101,8 +101,7 @@ cluster network, without relays).
 | `minReplicationFactor` | owners that must hold an object before a write or reference is accepted (default max(R−1, 2)) |
 | `image`, `imagePullPolicy`, `resources`, `env`, `nodeSelector`, `tolerations`, `affinity` | the node pods |
 | `port` | UDP port every node binds and advertises (default 4433) |
-| `storage.volumeClaimTemplate` | claim spec for each node's store |
-| `storage.paxosVolumeClaimTemplate` | optional separate claim for the acceptor state |
+| `storage.volumeClaimTemplate` | claim spec for each node's volume (data and acceptor state) |
 | `storage.deleteVolumesOnScaleDown` | delete a removed node's claims |
 | `zones` | failure domain of node *i* is `zones[i % len]` |
 | `gcInterval`, `extraArgs` | passed to every dstore command |
