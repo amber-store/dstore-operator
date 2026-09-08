@@ -80,6 +80,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			setCondition(s, "Valid", metav1.ConditionFalse, "InvalidSpec", "spec.image is required")
 		})
 	}
+	if m := c.Spec.MinReplicationFactor; m != nil && *m > c.Spec.ReplicationFactorOrDefault() {
+		return ctrl.Result{}, r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
+			setCondition(s, "Valid", metav1.ConditionFalse, "InvalidSpec", "spec.minReplicationFactor must not exceed spec.replicationFactor")
+		})
+	}
 
 	// Identities and Services for every desired node, so ids and addresses
 	// are known before anything runs.

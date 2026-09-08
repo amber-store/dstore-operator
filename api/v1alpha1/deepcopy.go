@@ -19,13 +19,13 @@ func (in *StorageSpec) DeepCopyInto(out *StorageSpec) {
 // DeepCopyInto copies the receiver into out.
 func (in *DstoreClusterSpec) DeepCopyInto(out *DstoreClusterSpec) {
 	*out = *in
-	if in.Replicas != nil {
-		v := *in.Replicas
-		out.Replicas = &v
+	if in.ReplicationFactor != nil {
+		v := *in.ReplicationFactor
+		out.ReplicationFactor = &v
 	}
-	if in.MinReplicas != nil {
-		v := *in.MinReplicas
-		out.MinReplicas = &v
+	if in.MinReplicationFactor != nil {
+		v := *in.MinReplicationFactor
+		out.MinReplicationFactor = &v
 	}
 	in.Storage.DeepCopyInto(&out.Storage)
 	if in.Zones != nil {

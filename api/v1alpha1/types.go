@@ -25,11 +25,13 @@ type DstoreClusterSpec struct {
 	// CapacityGiB is each node's placement weight in GiB. 0 derives it
 	// from the volume claim template's storage request.
 	CapacityGiB int32 `json:"capacityGiB,omitempty"`
-	// Replicas is R, the owners per object. Default 3.
-	Replicas *int32 `json:"replicas,omitempty"`
-	// MinReplicas is the owners that must hold an object before a write
-	// succeeds. Default max(R-1, 2).
-	MinReplicas *int32 `json:"minReplicas,omitempty"`
+	// ReplicationFactor is R, the number of nodes that own each object.
+	// Default 3. It is capped by the node count in placement, so a
+	// three-node cluster with R=3 keeps every object on every node.
+	ReplicationFactor *int32 `json:"replicationFactor,omitempty"`
+	// MinReplicationFactor is the number of owners that must hold an
+	// object before a write or a reference is accepted. Default max(R-1, 2).
+	MinReplicationFactor *int32 `json:"minReplicationFactor,omitempty"`
 	// Image is the dstore node image.
 	Image string `json:"image"`
 	// ImagePullPolicy of the node containers.
@@ -108,10 +110,10 @@ type DstoreClusterList struct {
 	Items           []DstoreCluster `json:"items"`
 }
 
-// ReplicasOrDefault returns R.
-func (s *DstoreClusterSpec) ReplicasOrDefault() int32 {
-	if s.Replicas != nil && *s.Replicas > 0 {
-		return *s.Replicas
+// ReplicationFactorOrDefault returns R.
+func (s *DstoreClusterSpec) ReplicationFactorOrDefault() int32 {
+	if s.ReplicationFactor != nil && *s.ReplicationFactor > 0 {
+		return *s.ReplicationFactor
 	}
 	return 3
 }

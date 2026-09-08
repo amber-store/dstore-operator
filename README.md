@@ -67,7 +67,8 @@ dstore client inside the cluster network, without relays).
 |---|---|
 | `nodes` | number of nodes (min 1) |
 | `capacityGiB` | placement weight per node; 0 derives it from the claim's storage request |
-| `replicas`, `minReplicas` | dstore's R and min_replicas |
+| `replicationFactor` | R: the number of nodes that own each object (default 3; capped by the node count in placement) |
+| `minReplicationFactor` | owners that must hold an object before a write or reference is accepted (default max(R−1, 2)) |
 | `image`, `imagePullPolicy`, `resources`, `env`, `nodeSelector`, `tolerations`, `affinity` | the node pods |
 | `port` | UDP port every node binds and advertises (default 4433) |
 | `storage.volumeClaimTemplate` | claim spec for each node's store |

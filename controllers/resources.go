@@ -103,8 +103,8 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 	port := c.Spec.PortOrDefault()
 	one := int32(1)
 	minR := int32(0)
-	if c.Spec.MinReplicas != nil {
-		minR = *c.Spec.MinReplicas
+	if c.Spec.MinReplicationFactor != nil {
+		minR = *c.Spec.MinReplicationFactor
 	}
 	env := []corev1.EnvVar{
 		{Name: "DSTORE_STORE", Value: storeMount},
@@ -112,7 +112,7 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 		{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("%s:%d", advertise, port)},
 		{Name: "DSTORE_ROLE", Value: role},
 		{Name: "DSTORE_WEIGHT", Value: strconv.Itoa(int(weightGiB(c)))},
-		{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicasOrDefault()))},
+		{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicationFactorOrDefault()))},
 		{Name: "DSTORE_MIN_REPLICAS", Value: strconv.Itoa(int(minR))},
 		{Name: "DSTORE_IDENTITY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: identitySecretName(c, i)}, Key: SecretKeyIdentity}}},

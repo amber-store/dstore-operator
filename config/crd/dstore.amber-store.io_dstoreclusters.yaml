@@ -21,6 +21,9 @@ spec:
         - name: Nodes
           type: integer
           jsonPath: .spec.nodes
+        - name: R
+          type: integer
+          jsonPath: .spec.replicationFactor
         - name: Members
           type: integer
           jsonPath: .status.members
@@ -48,13 +51,14 @@ spec:
                 capacityGiB:
                   type: integer
                   description: placement weight per node in GiB (0 = from the claim's storage request)
-                replicas:
+                replicationFactor:
                   type: integer
                   minimum: 1
-                  description: R, owners per object (default 3)
-                minReplicas:
+                  description: R, the number of nodes owning each object (default 3)
+                minReplicationFactor:
                   type: integer
                   minimum: 1
+                  description: owners that must hold an object before a write is accepted (default max(R-1, 2))
                 image:
                   type: string
                 imagePullPolicy:

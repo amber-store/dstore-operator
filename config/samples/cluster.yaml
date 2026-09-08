@@ -4,7 +4,8 @@ metadata:
   name: demo
 spec:
   nodes: 3
-  replicas: 3
+  replicationFactor: 3
+  minReplicationFactor: 2
   image: ghcr.io/amber-store/dstore:latest
   capacityGiB: 100
   gcInterval: 4h

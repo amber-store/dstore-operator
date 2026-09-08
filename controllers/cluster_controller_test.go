@@ -132,7 +132,7 @@ func newHarness(t *testing.T, nodes int32) *harness {
 	}
 	cluster := &dstorev1.DstoreCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "ns", Generation: 1},
-		Spec: dstorev1.DstoreClusterSpec{Nodes: nodes, Image: "dstore:test", CapacityGiB: 100,
+		Spec: dstorev1.DstoreClusterSpec{Nodes: nodes, Image: "dstore:test", CapacityGiB: 100, ReplicationFactor: ptr(int32(3)), MinReplicationFactor: ptr(int32(2)),
 			Storage: dstorev1.StorageSpec{VolumeClaimTemplate: corev1.PersistentVolumeClaimSpec{
 				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("50Gi")}}}}},
 	}
@@ -239,7 +239,7 @@ func TestBootstrapAndJoins(t *testing.T) {
 	for _, e := range d.Spec.Template.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
-	if env["DSTORE_ROLE"] != RoleJoin || env["DSTORE_WEIGHT"] != "100" || env["DSTORE_ADVERTISE"] == "" {
+	if env["DSTORE_ROLE"] != RoleJoin || env["DSTORE_WEIGHT"] != "100" || env["DSTORE_ADVERTISE"] == "" || env["DSTORE_REPLICAS"] != "3" || env["DSTORE_MIN_REPLICAS"] != "2" {
 		t.Fatalf("env %v", env)
 	}
 	// Node 1 is still joining: no second join starts.
@@ -355,5 +355,24 @@ func TestIdentityDerivation(t *testing.T) {
 	tk := Ticket([]Member{{ID: id, Addr: "ip:10.0.0.1:4433"}})
 	if len(tk.Members) != 1 || tk.Members[0].Addrs[0] != "ip:10.0.0.1:4433" {
 		t.Fatalf("ticket %+v", tk)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestInvalidReplication(t *testing.T) {
+	h := newHarness(t, 3)
+	c := h.cluster()
+	c.Spec.MinReplicationFactor = ptr(int32(4))
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	c = h.cluster()
+	if len(c.Status.Conditions) != 1 || c.Status.Conditions[0].Type != "Valid" || c.Status.Conditions[0].Status != metav1.ConditionFalse {
+		t.Fatalf("conditions %+v", c.Status.Conditions)
+	}
+	if h.hasDeployment(0) {
+		t.Fatal("nodes created for an invalid spec")
 	}
 }
