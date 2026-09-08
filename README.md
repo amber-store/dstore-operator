@@ -48,22 +48,48 @@ it. Claims are kept unless `storage.deleteVolumesOnScaleDown` is set.
 voter counts, the running transition, and each node's id, address and
 phase.
 
-## Install
+## Install with Helm
+
+The chart is published to the repository's OCI registry alongside the
+operator image:
 
 ```
-make deploy                                   # CRD, RBAC, the operator (ghcr.io/amber-store/dstore-operator)
-kubectl apply -f config/samples/cluster.yaml  # a three-node cluster on ghcr.io/amber-store/dstore:v0.1.0
+helm install dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator \
+  --version 0.1.0 --namespace dstore-system --create-namespace
+```
+
+This installs the `DstoreCluster` CRD, the operator with its RBAC, and a
+metrics Service. Useful values (`helm show values oci://ghcr.io/amber-store/charts/dstore-operator`):
+
+| value | default | meaning |
+|---|---|---|
+| `image.repository`, `image.tag` | `ghcr.io/amber-store/dstore-operator`, the chart's appVersion | the operator image |
+| `replicaCount`, `leaderElect` | 1, false | more than one replica turns leader election on |
+| `requeue` | `15s` | polling interval while a cluster is changing |
+| `resources`, `nodeSelector`, `tolerations`, `affinity` | | the operator pod |
+| `rbac.create`, `serviceAccount.create`, `serviceAccount.name` | true | |
+| `metrics.service.enabled` | true | a Service for the metrics port |
+
+Then create a cluster:
+
+```
+kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.0
 kubectl get dsc -w
 ```
+
+Upgrades: `helm upgrade dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator --version <new>`.
+Helm does not upgrade CRDs it installed from `crds/`; apply
+`config/crd/` by hand when a release changes the API.
+
+Without Helm, `make deploy` applies the plain manifests under `config/`.
 
 The node image is built and published by the
 [dstore](https://github.com/amber-store/dstore) repository's release
 workflow (`ghcr.io/amber-store/dstore:<tag>`); its entrypoint reads the
 `DSTORE_ROLE`, `DSTORE_SEED`, `DSTORE_TOKEN`, `DSTORE_IDENTITY` and
-`DSTORE_ADVERTISE` variables the operator sets.
-
-The operator needs UDP reachability to the node Services (it runs as a
-dstore client inside the cluster network, without relays).
+`DSTORE_ADVERTISE` variables the operator sets. The operator needs UDP
+reachability to the node Services (it runs as a dstore client inside the
+cluster network, without relays).
 
 ## Spec
 
@@ -87,7 +113,9 @@ dstore client inside the cluster network, without relays).
 - `controllers` — the reconciler, the desired-resource builders, and the
   dstore client seam (`Dialer`/`Cluster`) with its iroh implementation;
 - `cmd/manager` — the manager binary;
-- `config` — CRD, RBAC, manager Deployment, a sample.
+- `config` — CRD, RBAC, manager Deployment, a sample;
+- `charts/dstore-operator` — the Helm chart, published to
+  `oci://ghcr.io/amber-store/charts` by the release workflow.
 
 `go test ./...` runs the reconciler against controller-runtime's fake
 client and a fake dstore cluster: bootstrap, sequential joins, scale-down

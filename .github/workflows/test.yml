@@ -1,0 +1,18 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/dstore-operator
+      - run: helm template demo charts/dstore-operator > /dev/null

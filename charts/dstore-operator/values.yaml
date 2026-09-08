@@ -1,0 +1,47 @@
+# Default values for dstore-operator.
+
+image:
+  repository: ghcr.io/amber-store/dstore-operator
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+# Leader election is only needed with more than one replica.
+leaderElect: false
+# Polling interval while a cluster is bootstrapping, joining or scaling.
+requeue: 15s
+extraArgs: []
+
+serviceAccount:
+  create: true
+  name: ""
+rbac:
+  create: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+metrics:
+  port: 8080
+  service:
+    enabled: true

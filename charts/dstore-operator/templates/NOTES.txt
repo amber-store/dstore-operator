@@ -1,0 +1,23 @@
+dstore-operator {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Create a cluster:
+
+  kubectl apply -f - <<'YAML'
+  apiVersion: dstore.amber-store.io/v1alpha1
+  kind: DstoreCluster
+  metadata:
+    name: demo
+  spec:
+    nodes: 3
+    replicationFactor: 3
+    image: ghcr.io/amber-store/dstore:{{ .Chart.AppVersion }}
+    capacityGiB: 100
+    storage:
+      volumeClaimTemplate:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+  YAML
+
+then watch it join:  kubectl get dsc demo -w

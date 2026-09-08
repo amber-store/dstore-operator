@@ -1,0 +1,113 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: dstoreclusters.dstore.amber-store.io
+spec:
+  group: dstore.amber-store.io
+  names:
+    kind: DstoreCluster
+    listKind: DstoreClusterList
+    plural: dstoreclusters
+    singular: dstorecluster
+    shortNames: [dsc]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Nodes
+          type: integer
+          jsonPath: .spec.nodes
+        - name: R
+          type: integer
+          jsonPath: .spec.replicationFactor
+        - name: Members
+          type: integer
+          jsonPath: .status.members
+        - name: Voters
+          type: integer
+          jsonPath: .status.voters
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [nodes, image, storage]
+              properties:
+                nodes:
+                  type: integer
+                  minimum: 1
+                  description: number of dstore nodes
+                capacityGiB:
+                  type: integer
+                  description: placement weight per node in GiB (0 = from the claim's storage request)
+                replicationFactor:
+                  type: integer
+                  minimum: 1
+                  description: R, the number of nodes owning each object (default 3)
+                minReplicationFactor:
+                  type: integer
+                  minimum: 1
+                  description: owners that must hold an object before a write is accepted (default max(R-1, 2))
+                image:
+                  type: string
+                imagePullPolicy:
+                  type: string
+                port:
+                  type: integer
+                  description: UDP port every node binds and advertises (default 4433)
+                storage:
+                  type: object
+                  required: [volumeClaimTemplate]
+                  properties:
+                    volumeClaimTemplate:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    paxosVolumeClaimTemplate:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    deleteVolumesOnScaleDown:
+                      type: boolean
+                zones:
+                  type: array
+                  items:
+                    type: string
+                resources:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                nodeSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+                tolerations:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                affinity:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                gcInterval:
+                  type: string
+                extraArgs:
+                  type: array
+                  items:
+                    type: string
+                env:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

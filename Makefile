@@ -1,6 +1,9 @@
 IMG ?= ghcr.io/amber-store/dstore-operator:latest
 
-.PHONY: build test docker-build install deploy sample
+CHART_VERSION ?= 0.1.0
+HELM ?= helm
+
+.PHONY: build test docker-build install deploy sample chart chart-push
 
 build:
 	go build ./...
@@ -19,3 +22,10 @@ deploy: install
 
 sample:
 	kubectl apply -f config/samples/cluster.yaml
+
+chart:
+	$(HELM) lint charts/dstore-operator
+	$(HELM) package charts/dstore-operator --version $(CHART_VERSION) --app-version v$(CHART_VERSION)
+
+chart-push: chart
+	$(HELM) push dstore-operator-$(CHART_VERSION).tgz oci://ghcr.io/amber-store/charts
