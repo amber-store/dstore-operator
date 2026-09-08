@@ -1,8 +1,6 @@
 IMG ?= ghcr.io/amber-store/dstore-operator:latest
-NODE_IMG ?= ghcr.io/amber-store/dstore:latest
-DSTORE_VERSION ?= main
 
-.PHONY: build test docker-build docker-build-node install deploy sample
+.PHONY: build test docker-build install deploy sample
 
 build:
 	go build ./...
@@ -12,9 +10,6 @@ test:
 
 docker-build:
 	docker build -t $(IMG) .
-
-docker-build-node:
-	docker build --build-arg DSTORE_VERSION=$(DSTORE_VERSION) -t $(NODE_IMG) images/dstore
 
 install:
 	kubectl apply -f config/crd/

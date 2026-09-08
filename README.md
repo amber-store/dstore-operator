@@ -51,12 +51,16 @@ phase.
 ## Install
 
 ```
-make docker-build-node NODE_IMG=... DSTORE_VERSION=main   # the node image
-make docker-build IMG=...                                  # the operator
-make deploy
-kubectl apply -f config/samples/cluster.yaml
+make deploy                                   # CRD, RBAC, the operator (ghcr.io/amber-store/dstore-operator)
+kubectl apply -f config/samples/cluster.yaml  # a three-node cluster on ghcr.io/amber-store/dstore:v0.1.0
 kubectl get dsc -w
 ```
+
+The node image is built and published by the
+[dstore](https://github.com/amber-store/dstore) repository's release
+workflow (`ghcr.io/amber-store/dstore:<tag>`); its entrypoint reads the
+`DSTORE_ROLE`, `DSTORE_SEED`, `DSTORE_TOKEN`, `DSTORE_IDENTITY` and
+`DSTORE_ADVERTISE` variables the operator sets.
 
 The operator needs UDP reachability to the node Services (it runs as a
 dstore client inside the cluster network, without relays).
@@ -83,8 +87,7 @@ dstore client inside the cluster network, without relays).
 - `controllers` — the reconciler, the desired-resource builders, and the
   dstore client seam (`Dialer`/`Cluster`) with its iroh implementation;
 - `cmd/manager` — the manager binary;
-- `config` — CRD, RBAC, manager Deployment, a sample;
-- `images/dstore` — the node image and its entrypoint.
+- `config` — CRD, RBAC, manager Deployment, a sample.
 
 `go test ./...` runs the reconciler against controller-runtime's fake
 client and a fake dstore cluster: bootstrap, sequential joins, scale-down

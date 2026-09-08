@@ -6,7 +6,7 @@ spec:
   nodes: 3
   replicationFactor: 3
   minReplicationFactor: 2
-  image: ghcr.io/amber-store/dstore:latest
+  image: ghcr.io/amber-store/dstore:v0.1.0
   capacityGiB: 100
   gcInterval: 4h
   storage:
