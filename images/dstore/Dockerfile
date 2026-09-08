@@ -7,6 +7,7 @@ ENV CGO_ENABLED=0
 RUN go install github.com/amber-store/dstore/cmd/dstore@${DSTORE_VERSION}
 
 FROM alpine:3.20
+LABEL org.opencontainers.image.source=https://github.com/amber-store/dstore-operator
 RUN apk add --no-cache ca-certificates
 COPY --from=build /go/bin/dstore /usr/local/bin/dstore
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
