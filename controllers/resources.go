@@ -92,12 +92,14 @@ func desiredService(c *dstorev1.DstoreCluster, i int32) *corev1.Service {
 	}
 }
 
-// desiredDeployment renders node i's Deployment. advertise is the address
-// peers dial (the node's Service ClusterIP); role selects what the
+// desiredDeployment renders node i's Deployment. clusterIP is the node's
+// Service address; with the host network the node advertises its host's
+// IP instead, taken from the pod's status. role selects what the
 // entrypoint does on a fresh store.
-func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, role string) *appsv1.Deployment {
+func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, role string) *appsv1.Deployment {
 	labels := nodeLabels(c, i)
 	port := c.Spec.PortOrDefault()
+	hostNet := c.Spec.HostNetworkOrDefault()
 	one := int32(1)
 	minR := int32(0)
 	if c.Spec.MinReplicationFactor != nil {
@@ -106,14 +108,23 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 	env := []corev1.EnvVar{
 		{Name: "DSTORE_STORE", Value: storeMount},
 		{Name: "DSTORE_PORT", Value: strconv.Itoa(int(port))},
-		{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("%s:%d", advertise, port)},
-		{Name: "DSTORE_ROLE", Value: role},
-		{Name: "DSTORE_WEIGHT", Value: strconv.Itoa(int(weightGiB(c)))},
-		{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicationFactorOrDefault()))},
-		{Name: "DSTORE_MIN_REPLICAS", Value: strconv.Itoa(int(minR))},
-		{Name: "DSTORE_IDENTITY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: identitySecretName(c, i)}, Key: SecretKeyIdentity}}},
 	}
+	if hostNet {
+		env = append(env,
+			corev1.EnvVar{Name: "DSTORE_HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
+			corev1.EnvVar{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("$(DSTORE_HOST_IP):%d", port)},
+		)
+	} else {
+		env = append(env, corev1.EnvVar{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("%s:%d", clusterIP, port)})
+	}
+	env = append(env,
+		corev1.EnvVar{Name: "DSTORE_ROLE", Value: role},
+		corev1.EnvVar{Name: "DSTORE_WEIGHT", Value: strconv.Itoa(int(weightGiB(c)))},
+		corev1.EnvVar{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicationFactorOrDefault()))},
+		corev1.EnvVar{Name: "DSTORE_MIN_REPLICAS", Value: strconv.Itoa(int(minR))},
+		corev1.EnvVar{Name: "DSTORE_IDENTITY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: identitySecretName(c, i)}, Key: SecretKeyIdentity}}},
+	)
 	if len(c.Spec.Zones) > 0 {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_ZONE", Value: c.Spec.Zones[int(i)%len(c.Spec.Zones)]})
 	}
@@ -136,6 +147,29 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 
 	volumes := []corev1.Volume{{Name: "store", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName(c, i)}}}}
 	mounts := []corev1.VolumeMount{{Name: "store", MountPath: storeMount}}
+	containerPort := corev1.ContainerPort{Name: "iroh", ContainerPort: port, Protocol: corev1.ProtocolUDP}
+	podSpec := corev1.PodSpec{
+		NodeSelector: c.Spec.NodeSelector,
+		Tolerations:  c.Spec.Tolerations,
+		Affinity:     c.Spec.Affinity,
+		Volumes:      volumes,
+	}
+	if hostNet {
+		// The port is bound on the host; declaring it as a hostPort makes
+		// the scheduler keep two nodes of a cluster off the same host.
+		containerPort.HostPort = port
+		podSpec.HostNetwork = true
+		podSpec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+	}
+	podSpec.Containers = []corev1.Container{{
+		Name:            "dstore",
+		Image:           c.Spec.Image,
+		ImagePullPolicy: c.Spec.ImagePullPolicy,
+		Env:             env,
+		Ports:           []corev1.ContainerPort{containerPort},
+		VolumeMounts:    mounts,
+		Resources:       c.Spec.Resources,
+	}}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName(c, i), Namespace: c.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
@@ -144,21 +178,7 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, advertise string, rol
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					NodeSelector: c.Spec.NodeSelector,
-					Tolerations:  c.Spec.Tolerations,
-					Affinity:     c.Spec.Affinity,
-					Volumes:      volumes,
-					Containers: []corev1.Container{{
-						Name:            "dstore",
-						Image:           c.Spec.Image,
-						ImagePullPolicy: c.Spec.ImagePullPolicy,
-						Env:             env,
-						Ports:           []corev1.ContainerPort{{Name: "iroh", ContainerPort: port, Protocol: corev1.ProtocolUDP}},
-						VolumeMounts:    mounts,
-						Resources:       c.Spec.Resources,
-					}},
-				},
+				Spec:       podSpec,
 			},
 		},
 	}

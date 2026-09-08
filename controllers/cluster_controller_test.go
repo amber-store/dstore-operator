@@ -22,6 +22,7 @@ import (
 
 	dstorev1 "github.com/amber-store/dstore-operator/api/v1alpha1"
 	"github.com/amber-store/dstore/node"
+	"github.com/amber-store/dstore/ticket"
 	"github.com/amber-store/dstore/view"
 )
 
@@ -352,8 +353,8 @@ func TestIdentityDerivation(t *testing.T) {
 	if err != nil || again != id {
 		t.Fatalf("derivation not stable: %v", err)
 	}
-	tk := Ticket([]Member{{ID: id, Addr: "ip:10.0.0.1:4433"}})
-	if len(tk.Members) != 1 || tk.Members[0].Addrs[0] != "ip:10.0.0.1:4433" {
+	tk := Ticket([]Member{{ID: id, Addrs: []string{"ip:192.168.1.10:4433", "ip:10.0.0.1:4433"}}})
+	if len(tk.Members) != 1 || tk.Members[0].Addrs[0] != "ip:192.168.1.10:4433" || tk.Members[0].Addrs[1] != "ip:10.0.0.1:4433" {
 		t.Fatalf("ticket %+v", tk)
 	}
 }
@@ -374,5 +375,72 @@ func TestInvalidReplication(t *testing.T) {
 	}
 	if h.hasDeployment(0) {
 		t.Fatal("nodes created for an invalid spec")
+	}
+}
+
+// TestHostNetwork checks the host-network pod shape and that a running
+// pod's host IP becomes the node's advertised and dialed address.
+func TestHostNetwork(t *testing.T) {
+	h := newHarness(t, 2)
+	h.step()
+	h.step()
+	var d appsv1.Deployment
+	if err := h.c.Get(context.Background(), types.NamespacedName{Name: "demo-node-0", Namespace: "ns"}, &d); err != nil {
+		t.Fatal(err)
+	}
+	ps := d.Spec.Template.Spec
+	if !ps.HostNetwork || ps.DNSPolicy != corev1.DNSClusterFirstWithHostNet {
+		t.Fatalf("pod not on the host network: %+v", ps.HostNetwork)
+	}
+	if p := ps.Containers[0].Ports[0]; p.HostPort != 4433 || p.ContainerPort != 4433 || p.Protocol != corev1.ProtocolUDP {
+		t.Fatalf("port %+v", p)
+	}
+	env := map[string]corev1.EnvVar{}
+	for _, e := range ps.Containers[0].Env {
+		env[e.Name] = e
+	}
+	if env["DSTORE_ADVERTISE"].Value != "$(DSTORE_HOST_IP):4433" || env["DSTORE_HOST_IP"].ValueFrom.FieldRef.FieldPath != "status.hostIP" {
+		t.Fatalf("advertise env %+v %+v", env["DSTORE_ADVERTISE"], env["DSTORE_HOST_IP"])
+	}
+	// A running pod on host 192.168.1.10: the operator dials that first.
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-node-0-abc", Namespace: "ns", Labels: nodeLabels(h.cluster(), 0)},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, HostIP: "192.168.1.10"}}
+	if err := h.c.Create(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	c := h.cluster()
+	if c.Status.Nodes[0].Address != "192.168.1.10" {
+		t.Fatalf("status address %q", c.Status.Nodes[0].Address)
+	}
+	tk, err := ticket.Parse(c.Status.Ticket)
+	if err != nil || len(tk.Members) != 1 || tk.Members[0].Addrs[0] != "ip:192.168.1.10:4433" || len(tk.Members[0].Addrs) != 2 {
+		t.Fatalf("ticket %+v %v", tk, err)
+	}
+}
+
+// TestClusterNetwork checks the opt-out: Service addresses only.
+func TestClusterNetwork(t *testing.T) {
+	h := newHarness(t, 2)
+	c := h.cluster()
+	off := false
+	c.Spec.HostNetwork = &off
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	h.step()
+	var d appsv1.Deployment
+	if err := h.c.Get(context.Background(), types.NamespacedName{Name: "demo-node-0", Namespace: "ns"}, &d); err != nil {
+		t.Fatal(err)
+	}
+	ps := d.Spec.Template.Spec
+	if ps.HostNetwork || ps.Containers[0].Ports[0].HostPort != 0 {
+		t.Fatalf("host network used: %+v", ps)
+	}
+	for _, e := range ps.Containers[0].Env {
+		if e.Name == "DSTORE_ADVERTISE" && e.Value != "10.0.0.1:4433" {
+			t.Fatalf("advertise %q", e.Value)
+		}
 	}
 }

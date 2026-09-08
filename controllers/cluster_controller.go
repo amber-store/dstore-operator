@@ -57,9 +57,31 @@ type nodeInfo struct {
 	index   int32
 	id      view.NodeID
 	addr    string // ClusterIP; empty until the Service has one
+	hostIP  string // the running pod's host IP, with the host network
 	ready   bool   // Deployment has an available replica
 	exists  bool   // Deployment exists
 	joining bool   // a join Secret exists
+}
+
+// addrs returns the node's dial addresses, host IP first.
+func (in *nodeInfo) addrs(port int32) []string {
+	var out []string
+	if in.hostIP != "" {
+		out = append(out, fmt.Sprintf("ip:%s:%d", in.hostIP, port))
+	}
+	if in.addr != "" {
+		out = append(out, fmt.Sprintf("ip:%s:%d", in.addr, port))
+	}
+	return out
+}
+
+// address is what status reports: the host IP with the host network,
+// the Service address otherwise.
+func (in *nodeInfo) address(hostNet bool) string {
+	if hostNet && in.hostIP != "" {
+		return in.hostIP
+	}
+	return in.addr
 }
 
 // Reconcile drives one cluster towards its spec (§8.1 of the design: one
@@ -133,7 +155,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !n0.ready {
 		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
-			s.Nodes = nodeStatuses(infos, nil)
+			s.Nodes = nodeStatuses(&c, infos, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Bootstrapping", "waiting for node 0 to start")
 		})
 	}
@@ -141,8 +163,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Dial the cluster through every node that is running.
 	var members []Member
 	for _, in := range sortedInfos(infos) {
-		if in.ready && in.addr != "" {
-			members = append(members, Member{ID: in.id, Addr: fmt.Sprintf("ip:%s:%d", in.addr, c.Spec.PortOrDefault())})
+		if in.ready && len(in.addrs(c.Spec.PortOrDefault())) > 0 {
+			members = append(members, Member{ID: in.id, Addrs: in.addrs(c.Spec.PortOrDefault())})
 		}
 	}
 	cl, err := r.Dialer.Dial(ctx, members)
@@ -150,7 +172,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("cluster not reachable yet", "error", err)
 		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
-			s.Nodes = nodeStatuses(infos, nil)
+			s.Nodes = nodeStatuses(&c, infos, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Unreachable", "cluster not reachable: "+err.Error())
 		})
 	}
@@ -238,7 +260,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		s.Voters = int32(len(v.Voters))
 		s.Ticket = Ticket(members).Encode()
 		s.Transition = transitionText(v)
-		s.Nodes = nodeStatuses(infos, v)
+		s.Nodes = nodeStatuses(&c, infos, v)
 		if phase == dstorev1.PhaseReady {
 			setCondition(s, "Ready", metav1.ConditionTrue, "Ready", fmt.Sprintf("%d members, %d voters", len(v.Nodes), len(v.Voters)))
 		} else {
@@ -273,10 +295,10 @@ func sortedInfos(infos map[int32]*nodeInfo) []*nodeInfo {
 	return out
 }
 
-func nodeStatuses(infos map[int32]*nodeInfo, v *view.View) []dstorev1.NodeStatus {
+func nodeStatuses(c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, v *view.View) []dstorev1.NodeStatus {
 	var out []dstorev1.NodeStatus
 	for _, in := range sortedInfos(infos) {
-		st := dstorev1.NodeStatus{Index: in.index, ID: view.IDString(in.id), Address: in.addr, Phase: dstorev1.NodePending}
+		st := dstorev1.NodeStatus{Index: in.index, ID: view.IDString(in.id), Address: in.address(c.Spec.HostNetworkOrDefault()), Phase: dstorev1.NodePending}
 		if v != nil {
 			if _, ok := v.Node(in.id); ok {
 				st.Phase = dstorev1.NodeMember
@@ -367,6 +389,16 @@ func (r *ClusterReconciler) observeDeployment(ctx context.Context, c *dstorev1.D
 	}
 	in.exists = true
 	in.ready = d.Status.AvailableReplicas > 0
+	if c.Spec.HostNetworkOrDefault() {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(c.Namespace), client.MatchingLabels(nodeLabels(c, in.index))); err == nil {
+			for _, p := range pods.Items {
+				if p.Status.Phase == corev1.PodRunning && p.Status.HostIP != "" {
+					in.hostIP = p.Status.HostIP
+				}
+			}
+		}
+	}
 	var js corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: joinSecretName(c, in.index), Namespace: c.Namespace}, &js); err == nil {
 		in.joining = true

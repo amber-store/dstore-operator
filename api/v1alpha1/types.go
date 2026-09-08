@@ -34,8 +34,14 @@ type DstoreClusterSpec struct {
 	Image string `json:"image"`
 	// ImagePullPolicy of the node containers.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
-	// Port is the UDP port every node binds and advertises. Default 4433.
+	// Port is the UDP port every node binds and advertises. With
+	// hostNetwork it is bound on the host itself. Default 4433.
 	Port int32 `json:"port,omitempty"`
+	// HostNetwork runs the node pods on their host's network stack, with
+	// the port bound on the host and the host's IP advertised, so that
+	// peers and clients can open direct iroh connections to the nodes.
+	// Two nodes of a cluster then never share a host. Default true.
+	HostNetwork *bool `json:"hostNetwork,omitempty"`
 	// Storage describes the nodes' volumes.
 	Storage StorageSpec `json:"storage"`
 	// Zones, when set, assigns node i the failure domain zones[i % len].
@@ -114,6 +120,11 @@ func (s *DstoreClusterSpec) ReplicationFactorOrDefault() int32 {
 		return *s.ReplicationFactor
 	}
 	return 3
+}
+
+// HostNetworkOrDefault reports whether the nodes use the host network.
+func (s *DstoreClusterSpec) HostNetworkOrDefault() bool {
+	return s.HostNetwork == nil || *s.HostNetwork
 }
 
 // PortOrDefault returns the node port.

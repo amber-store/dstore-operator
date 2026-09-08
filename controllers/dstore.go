@@ -17,10 +17,11 @@ import (
 	irohkey "github.com/tmc/go-iroh/key"
 )
 
-// Member is a node the operator can dial: its identity and address.
+// Member is a node the operator can dial: its identity and addresses
+// ("ip:host:port"), best first.
 type Member struct {
-	ID   view.NodeID
-	Addr string // "ip:host:port"
+	ID    view.NodeID
+	Addrs []string
 }
 
 // Cluster is what the reconciler needs from a running dstore cluster.
@@ -65,7 +66,7 @@ func Ticket(members []Member) ticket.Ticket {
 	t := ticket.Ticket{}
 	for _, m := range members {
 		id := m.ID
-		t.Members = append(t.Members, ticket.Member{ID: id[:], Addrs: []string{m.Addr}})
+		t.Members = append(t.Members, ticket.Member{ID: id[:], Addrs: append([]string{}, m.Addrs...)})
 	}
 	return t
 }

@@ -8,6 +8,8 @@ spec:
   minReplicationFactor: 2
   image: ghcr.io/amber-store/dstore:v0.1.0
   capacityGiB: 100
+  port: 4433
+  hostNetwork: true
   gcInterval: 4h
   storage:
     volumeClaimTemplate:

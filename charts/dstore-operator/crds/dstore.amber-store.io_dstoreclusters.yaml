@@ -65,7 +65,10 @@ spec:
                   type: string
                 port:
                   type: integer
-                  description: UDP port every node binds and advertises (default 4433)
+                  description: UDP port every node binds (on the host with hostNetwork) and advertises (default 4433)
+                hostNetwork:
+                  type: boolean
+                  description: run the nodes on their hosts' network stack and advertise the host IP, for direct iroh connections (default true)
                 storage:
                   type: object
                   required: [volumeClaimTemplate]

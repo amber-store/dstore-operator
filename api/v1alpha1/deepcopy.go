@@ -23,6 +23,10 @@ func (in *DstoreClusterSpec) DeepCopyInto(out *DstoreClusterSpec) {
 		v := *in.MinReplicationFactor
 		out.MinReplicationFactor = &v
 	}
+	if in.HostNetwork != nil {
+		v := *in.HostNetwork
+		out.HostNetwork = &v
+	}
 	in.Storage.DeepCopyInto(&out.Storage)
 	if in.Zones != nil {
 		out.Zones = append([]string{}, in.Zones...)
