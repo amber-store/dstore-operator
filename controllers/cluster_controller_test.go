@@ -115,12 +115,13 @@ func (d *fakeDialer) Dial(ctx context.Context, members []Member) (Cluster, error
 }
 
 type harness struct {
-	t   *testing.T
-	c   client.Client
-	r   *ClusterReconciler
-	fd  *fakeDialer
-	key types.NamespacedName
-	ips int
+	t      *testing.T
+	c      client.Client
+	r      *ClusterReconciler
+	fd     *fakeDialer
+	key    types.NamespacedName
+	ips    int
+	hashes map[string]string // Deployment name -> spec hash seen at the last step
 }
 
 func newHarness(t *testing.T, nodes int32) *harness {
@@ -140,11 +141,13 @@ func newHarness(t *testing.T, nodes int32) *harness {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(&dstorev1.DstoreCluster{}).Build()
 	fd := &fakeDialer{cluster: &fakeCluster{}}
 	r := &ClusterReconciler{Client: c, Dialer: fd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))}
-	return &harness{t: t, c: c, r: r, fd: fd, key: types.NamespacedName{Name: "demo", Namespace: "ns"}}
+	return &harness{t: t, c: c, r: r, fd: fd, key: types.NamespacedName{Name: "demo", Namespace: "ns"}, hashes: map[string]string{}}
 }
 
 // step reconciles once and then plays the cluster's part: Services get
-// ClusterIPs and Deployments become available.
+// ClusterIPs and Deployments become available. A Deployment whose spec
+// changed since the last step is unavailable for this step, as a
+// Recreate rollout would make it.
 func (h *harness) step() {
 	h.t.Helper()
 	if _, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key}); err != nil {
@@ -162,11 +165,56 @@ func (h *harness) step() {
 	var deps appsv1.DeploymentList
 	_ = h.c.List(context.Background(), &deps, client.InNamespace("ns"))
 	for i := range deps.Items {
-		if deps.Items[i].Status.AvailableReplicas == 0 {
-			deps.Items[i].Status.AvailableReplicas = 1
-			_ = h.c.Status().Update(context.Background(), &deps.Items[i])
+		d := &deps.Items[i]
+		hash := d.Annotations[AnnotationSpecHash]
+		available := int32(1)
+		if last, seen := h.hashes[d.Name]; seen && last != hash {
+			available = 0
+		}
+		h.hashes[d.Name] = hash
+		if d.Status.AvailableReplicas != available {
+			d.Status.AvailableReplicas = available
+			_ = h.c.Status().Update(context.Background(), d)
 		}
 	}
+}
+
+// ready drives a fresh cluster to Ready with every node a member.
+func (h *harness) ready(nodes int32) {
+	h.t.Helper()
+	h.step()
+	h.step()
+	h.step()
+	for i := int32(1); i < nodes; i++ {
+		h.fd.cluster.addMember(h.nodeID(i))
+		h.step()
+	}
+	if got := h.cluster().Status.Phase; got != dstorev1.PhaseReady {
+		h.t.Fatalf("phase %q", got)
+	}
+}
+
+func (h *harness) deployment(i int32) *appsv1.Deployment {
+	h.t.Helper()
+	var d appsv1.Deployment
+	if err := h.c.Get(context.Background(), types.NamespacedName{Name: fmt.Sprintf("demo-node-%d", i), Namespace: "ns"}, &d); err != nil {
+		h.t.Fatal(err)
+	}
+	return &d
+}
+
+func (h *harness) env(i int32) map[string]corev1.EnvVar {
+	h.t.Helper()
+	env := map[string]corev1.EnvVar{}
+	for _, e := range h.deployment(i).Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e
+	}
+	return env
+}
+
+func (h *harness) image(i int32) string {
+	h.t.Helper()
+	return h.deployment(i).Spec.Template.Spec.Containers[0].Image
 }
 
 func (h *harness) cluster() *dstorev1.DstoreCluster {
@@ -402,6 +450,13 @@ func TestHostNetwork(t *testing.T) {
 	if env["DSTORE_ADVERTISE"].Value != "$(DSTORE_HOST_IP):4433" || env["DSTORE_HOST_IP"].ValueFrom.FieldRef.FieldPath != "status.hostIP" {
 		t.Fatalf("advertise env %+v %+v", env["DSTORE_ADVERTISE"], env["DSTORE_HOST_IP"])
 	}
+	// The node binds the advertised address, not the wildcard: bound to
+	// 0.0.0.0 on the host network, replies to a client on the same host
+	// would leave from the CNI bridge address and fail QUIC path
+	// validation (#1).
+	if env["DSTORE_EXTRA_ARGS"].Value != "--bind $(DSTORE_HOST_IP):4433" {
+		t.Fatalf("extra args %q", env["DSTORE_EXTRA_ARGS"].Value)
+	}
 	// A running pod on host 192.168.1.10: the operator dials that first.
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-node-0-abc", Namespace: "ns", Labels: nodeLabels(h.cluster(), 0)},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, HostIP: "192.168.1.10"}}
@@ -442,5 +497,117 @@ func TestClusterNetwork(t *testing.T) {
 		if e.Name == "DSTORE_ADVERTISE" && e.Value != "10.0.0.1:4433" {
 			t.Fatalf("advertise %q", e.Value)
 		}
+		if e.Name == "DSTORE_EXTRA_ARGS" {
+			t.Fatalf("extra args %q set without the host network", e.Value)
+		}
+	}
+}
+
+// TestExtraArgsFollowBind checks that the user's extra args come after
+// the operator's, so a --bind of their own still wins.
+func TestExtraArgsFollowBind(t *testing.T) {
+	h := newHarness(t, 1)
+	c := h.cluster()
+	c.Spec.Port = 4434
+	c.Spec.ExtraArgs = []string{"--bind", "127.0.0.1:4434"}
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	h.step()
+	if got := h.env(0)["DSTORE_EXTRA_ARGS"].Value; got != "--bind $(DSTORE_HOST_IP):4434 --bind 127.0.0.1:4434" {
+		t.Fatalf("extra args %q", got)
+	}
+}
+
+// TestSpecChangeRollsNodes checks that a spec change reaches running
+// nodes (#2), one node at a time, and that nothing is written when the
+// spec has not changed.
+func TestSpecChangeRollsNodes(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	// A joined node's Deployment still names the spent, deleted join
+	// secret: the references are optional so its pod can restart.
+	for _, name := range []string{"DSTORE_SEED", "DSTORE_TOKEN"} {
+		ref := h.env(1)[name].ValueFrom.SecretKeyRef
+		if ref == nil || ref.Optional == nil || !*ref.Optional {
+			t.Fatalf("%s reference not optional: %+v", name, ref)
+		}
+	}
+	// Steady state: no Deployment or Service is written.
+	rvs := map[string]string{}
+	for i := int32(0); i < 3; i++ {
+		rvs[fmt.Sprintf("d%d", i)] = h.deployment(i).ResourceVersion
+	}
+	h.step()
+	h.step()
+	for i := int32(0); i < 3; i++ {
+		if got := h.deployment(i).ResourceVersion; got != rvs[fmt.Sprintf("d%d", i)] {
+			t.Fatalf("node %d deployment rewritten without a spec change", i)
+		}
+	}
+	// Change the image and the port: node 0 rolls first, alone.
+	c := h.cluster()
+	c.Spec.Image = "dstore:new"
+	c.Spec.Port = 4434
+	c.Spec.Env = []corev1.EnvVar{{Name: "EXTRA", Value: "1"}}
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	if h.image(0) != "dstore:new" || h.image(1) != "dstore:test" || h.image(2) != "dstore:test" {
+		t.Fatalf("images after first step: %s %s %s", h.image(0), h.image(1), h.image(2))
+	}
+	if got := h.env(0)["EXTRA"].Value; got != "1" {
+		t.Fatalf("env not updated: %q", got)
+	}
+	if h.deployment(0).Spec.Template.Spec.Containers[0].Ports[0].HostPort != 4434 {
+		t.Fatal("port not updated")
+	}
+	// Node 0 is restarting: nothing else rolls until it is back.
+	h.step()
+	if h.image(1) != "dstore:test" || h.image(2) != "dstore:test" {
+		t.Fatalf("next node rolled while node 0 was down: %s %s", h.image(1), h.image(2))
+	}
+	if st := h.cluster().Status; st.Phase != dstorev1.PhaseReady {
+		t.Fatalf("phase %q while node 0 restarts with the others up", st.Phase)
+	}
+	h.step()
+	if h.image(1) != "dstore:new" || h.image(2) != "dstore:test" {
+		t.Fatalf("images after node 0 came back: %s %s", h.image(1), h.image(2))
+	}
+	h.step()
+	h.step()
+	if h.image(2) != "dstore:new" {
+		t.Fatal("node 2 not rolled")
+	}
+	// The Services follow the port.
+	var svc corev1.Service
+	if err := h.c.Get(context.Background(), types.NamespacedName{Name: "demo-node-2", Namespace: "ns"}, &svc); err != nil {
+		t.Fatal(err)
+	}
+	if svc.Spec.Ports[0].Port != 4434 || svc.Spec.Ports[0].TargetPort.IntValue() != 4434 {
+		t.Fatalf("service ports %+v", svc.Spec.Ports)
+	}
+	h.step()
+	if st := h.cluster().Status; st.Phase != dstorev1.PhaseReady || st.Members != 3 {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+// TestRequeueWhileTransitionPending checks that a cluster whose members
+// are all in but whose transition is still running is polled at the
+// short interval, so status does not lag the nodes.
+func TestRequeueWhileTransitionPending(t *testing.T) {
+	h := newHarness(t, 2)
+	h.ready(2)
+	res, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key})
+	if err != nil || res.RequeueAfter <= h.r.requeue().RequeueAfter {
+		t.Fatalf("idle cluster polled every %v", res.RequeueAfter)
+	}
+	h.fd.cluster.v.Pending = &view.Pending{ID: h.fd.cluster.v.Epoch + 1, Reason: "join"}
+	res, err = h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key})
+	if err != nil || res.RequeueAfter != h.r.requeue().RequeueAfter {
+		t.Fatalf("pending transition polled every %v", res.RequeueAfter)
 	}
 }

@@ -1,6 +1,9 @@
 package controllers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -19,6 +22,10 @@ const (
 	LabelNode    = "dstore.amber-store.io/node"
 	LabelApp     = "app.kubernetes.io/name"
 	AppName      = "dstore"
+	// AnnotationSpecHash records, on a node's Deployment, the hash of the
+	// spec the operator last wrote; a different desired hash means a
+	// rollout.
+	AnnotationSpecHash = "dstore.amber-store.io/spec-hash"
 
 	SecretKeyIdentity = "identity"
 	SecretKeyToken    = "token"
@@ -32,6 +39,16 @@ const (
 	RoleInit = "init"
 	RoleJoin = "join"
 )
+
+// nodeRole is the role node i starts with on a fresh store: node 0
+// creates the cluster, every other node joins it. A store that is
+// already a member ignores the role and just serves.
+func nodeRole(i int32) string {
+	if i == 0 {
+		return RoleInit
+	}
+	return RoleJoin
+}
 
 func nodeName(c *dstorev1.DstoreCluster, i int32) string {
 	return fmt.Sprintf("%s-node-%d", c.Name, i)
@@ -131,11 +148,24 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, rol
 	if c.Spec.GCInterval != "" {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_GC_INTERVAL", Value: c.Spec.GCInterval})
 	}
-	if len(c.Spec.ExtraArgs) > 0 {
-		env = append(env, corev1.EnvVar{Name: "DSTORE_EXTRA_ARGS", Value: joinArgs(c.Spec.ExtraArgs)})
+	var args []string
+	if hostNet {
+		// Bind the advertised address rather than the wildcard. Bound to
+		// 0.0.0.0 on the host network, the kernel picks the source address
+		// of each reply by route, so a client on the same host (reached
+		// over the CNI bridge) gets replies from the bridge's address and
+		// QUIC path validation fails. The user's extra args come after, so
+		// a --bind of their own still wins.
+		args = append(args, "--bind", fmt.Sprintf("$(DSTORE_HOST_IP):%d", port))
+	}
+	args = append(args, c.Spec.ExtraArgs...)
+	if len(args) > 0 {
+		env = append(env, corev1.EnvVar{Name: "DSTORE_EXTRA_ARGS", Value: joinArgs(args)})
 	}
 	if role == RoleJoin {
-		optional := false
+		// The join secret is deleted once the node has joined; the
+		// references are optional so that the member's pod can restart.
+		optional := true
 		env = append(env,
 			corev1.EnvVar{Name: "DSTORE_SEED", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: joinSecretName(c, i)}, Key: SecretKeySeed, Optional: &optional}}},
@@ -182,6 +212,17 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, rol
 			},
 		},
 	}
+}
+
+// specHash hashes the Deployment spec the operator wants, so that an
+// unchanged spec costs no write and a changed one is a rollout.
+func specHash(d *appsv1.Deployment) string {
+	b, err := json.Marshal(d.Spec)
+	if err != nil {
+		panic(err) // a Deployment spec always marshals
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func joinArgs(args []string) string {

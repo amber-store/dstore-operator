@@ -160,16 +160,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.requeue(), nil
 	}
 	if !n0.exists {
-		if err := r.ensureNode(ctx, &c, n0, RoleInit); err != nil {
+		if _, err := r.ensureNode(ctx, &c, n0, RoleInit); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-	if !n0.ready {
-		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
-			s.Phase = dstorev1.PhaseBootstrapping
-			s.Nodes = nodeStatuses(&c, infos, nil)
-			setCondition(s, "Ready", metav1.ConditionFalse, "Bootstrapping", "waiting for node 0 to start")
-		})
+	} else if err := r.rollout(ctx, &c, infos); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Dial the cluster through every node that is running.
@@ -178,6 +173,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if in.ready && len(in.addrs(c.Spec.PortOrDefault())) > 0 {
 			members = append(members, Member{ID: in.id, Addrs: in.addrs(c.Spec.PortOrDefault())})
 		}
+	}
+	if len(members) == 0 {
+		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
+			s.Phase = dstorev1.PhaseBootstrapping
+			s.Nodes = nodeStatuses(&c, infos, nil)
+			setCondition(s, "Ready", metav1.ConditionFalse, "Bootstrapping", "waiting for node 0 to start")
+		})
 	}
 	cl, err := r.Dialer.Dial(ctx, members)
 	if err != nil {
@@ -231,7 +233,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.ensureJoinSecret(ctx, &c, in.index, hex.EncodeToString(reply.Token), seed); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.ensureNode(ctx, &c, in, RoleJoin); err != nil {
+		if _, err := r.ensureNode(ctx, &c, in, RoleJoin); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("join started", "node", in.index, "id", view.ShortID(in.id))
@@ -281,10 +283,36 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	if phase != dstorev1.PhaseReady {
+	// Poll while anything is in flight, a transition after the last join
+	// included, so that status does not lag the nodes.
+	if phase != dstorev1.PhaseReady || busy {
 		return r.requeue(), nil
 	}
 	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+}
+
+// rollout brings the existing nodes' Deployments up to the spec, one
+// node at a time: an update restarts the node, and the next node waits
+// until the restarted one is available again. Nodes beyond spec.nodes
+// are on their way out and are left alone.
+func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo) error {
+	for _, in := range sortedInfos(infos) {
+		if !in.exists || in.index >= c.Spec.Nodes || in.addr == "" {
+			continue
+		}
+		changed, err := r.ensureNode(ctx, c, in, nodeRole(in.index))
+		if err != nil {
+			return err
+		}
+		if changed {
+			r.Log.Info("node updated", "cluster", client.ObjectKeyFromObject(c).String(), "node", in.index)
+			return nil
+		}
+		if !in.ready {
+			return nil
+		}
+	}
+	return nil
 }
 
 func transitionText(v *view.View) string {
@@ -360,19 +388,18 @@ func (r *ClusterReconciler) identityOf(ctx context.Context, c *dstorev1.DstoreCl
 	return IdentityID(string(s.Data[SecretKeyIdentity]))
 }
 
+// ensureService creates or updates node i's Service and returns its
+// ClusterIP, empty until one is allocated.
 func (r *ClusterReconciler) ensureService(ctx context.Context, c *dstorev1.DstoreCluster, i int32) (string, error) {
-	var svc corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Name: nodeName(c, i), Namespace: c.Namespace}, &svc)
-	if apierrors.IsNotFound(err) {
-		d := desiredService(c, i)
-		if err := controllerutil.SetControllerReference(c, d, r.Scheme()); err != nil {
-			return "", err
-		}
-		if err := r.Create(ctx, d); err != nil {
-			return "", err
-		}
-		return d.Spec.ClusterIP, nil
-	}
+	want := desiredService(c, i)
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: want.Name, Namespace: want.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		mergeLabels(svc, want.Labels)
+		svc.Spec.Type = want.Spec.Type
+		svc.Spec.Selector = want.Spec.Selector
+		svc.Spec.Ports = want.Spec.Ports
+		return controllerutil.SetControllerReference(c, svc, r.Scheme())
+	})
 	if err != nil {
 		return "", err
 	}
@@ -380,6 +407,17 @@ func (r *ClusterReconciler) ensureService(ctx context.Context, c *dstorev1.Dstor
 		return "", nil
 	}
 	return svc.Spec.ClusterIP, nil
+}
+
+func mergeLabels(o client.Object, labels map[string]string) {
+	l := o.GetLabels()
+	if l == nil {
+		l = map[string]string{}
+	}
+	for k, v := range labels {
+		l[k] = v
+	}
+	o.SetLabels(l)
 }
 
 func (r *ClusterReconciler) serviceAddr(ctx context.Context, c *dstorev1.DstoreCluster, i int32) (string, error) {
@@ -438,20 +476,40 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, c *dstorev1.DstoreClu
 	return r.Create(ctx, d)
 }
 
-// ensureNode creates a node's claim and Deployment.
-func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCluster, in *nodeInfo, role string) error {
+// ensureNode creates a node's claim and creates or updates its
+// Deployment. It reports whether the Deployment was written: an update
+// restarts the node (one replica, Recreate). The spec the operator last
+// wrote is recorded as a hash annotation, so an unchanged spec costs no
+// write and server-side defaults never look like drift.
+func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCluster, in *nodeInfo, role string) (bool, error) {
 	if err := r.ensurePVC(ctx, c, in.index, pvcName(c, in.index), c.Spec.Storage.VolumeClaimTemplate); err != nil {
-		return err
+		return false, err
 	}
-	d := desiredDeployment(c, in.index, in.addr, role)
-	if err := controllerutil.SetControllerReference(c, d, r.Scheme()); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, d); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	want := desiredDeployment(c, in.index, in.addr, role)
+	hash := specHash(want)
+	d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: want.Name, Namespace: want.Namespace}}
+	res, err := controllerutil.CreateOrUpdate(ctx, r.Client, d, func() error {
+		if d.Annotations[AnnotationSpecHash] == hash {
+			return nil
+		}
+		mergeLabels(d, want.Labels)
+		if d.Annotations == nil {
+			d.Annotations = map[string]string{}
+		}
+		d.Annotations[AnnotationSpecHash] = hash
+		d.Spec.Replicas = want.Spec.Replicas
+		d.Spec.Strategy = want.Spec.Strategy
+		d.Spec.Template = want.Spec.Template
+		if d.Spec.Selector == nil {
+			d.Spec.Selector = want.Spec.Selector // immutable once set
+		}
+		return controllerutil.SetControllerReference(c, d, r.Scheme())
+	})
+	if err != nil {
+		return false, err
 	}
 	in.exists = true
-	return nil
+	return res != controllerutil.OperationResultNone, nil
 }
 
 func (r *ClusterReconciler) ensureJoinSecret(ctx context.Context, c *dstorev1.DstoreCluster, i int32, tokenHex, seed string) error {

@@ -19,12 +19,16 @@ creates:
 - a **Deployment** (one replica, `Recreate`) running the node image with
   the identity, address, weight and role in its environment. By default
   the pod runs on its host's network stack (`hostNetwork`), binds
-  `spec.port` on the host and advertises the host's IP, so peers and
+  `spec.port` on the host IP and advertises that address, so peers and
   clients outside the Kubernetes network reach it directly over iroh;
   the port is declared as a `hostPort`, which keeps two nodes of a
-  cluster off the same host. With `hostNetwork: false` the node
-  advertises its Service address instead and is reachable only from
-  inside the cluster network.
+  cluster off the same host. The node binds the host IP rather than the
+  wildcard address (the operator passes `--bind` through
+  `DSTORE_EXTRA_ARGS`, ahead of `spec.extraArgs`) because replies to a
+  client on the same host would otherwise leave from the CNI bridge's
+  address and fail QUIC path validation. With `hostNetwork: false` the
+  node advertises its Service address instead and is reachable only
+  from inside the cluster network.
 
 The join dance (dstore's §8.1) is driven from the operator, which talks
 to the cluster through the dstore client library over iroh:
@@ -48,6 +52,24 @@ Scaling `spec.nodes` down removes the highest-index node through
 `node remove` (data moves to the survivors, then its vote is removed) and
 deletes its Deployment, Service and Secrets once the view no longer lists
 it. Claims are kept unless `storage.deleteVolumesOnScaleDown` is set.
+
+Any other spec change (`image`, `port`, `resources`, `env`, `extraArgs`,
+scheduling fields, …) is rolled out to the running nodes **one node at a
+time**: the operator rewrites a node's Deployment (which restarts that
+node, as each runs one replica with the `Recreate` strategy) and waits
+for it to be available again before touching the next. The spec a
+Deployment was last written from is recorded in its
+`dstore.amber-store.io/spec-hash` annotation, so an unchanged spec costs
+no writes. Node Services follow the spec the same way.
+
+Deleting a `DstoreCluster` deletes its Deployments, Services and
+Secrets through owner references, but retained claims (the default) are
+deliberately kept: they carry no owner reference, so the nodes' data and
+identities survive the object. Delete the `<cluster>-node-<i>-store`
+claims by hand to start over; a cluster recreated with the same name
+would otherwise reuse the old volumes and identities. With
+`storage.deleteVolumesOnScaleDown` the claims are owned by the cluster
+and go with it.
 
 `status` reports the phase (`Bootstrapping`, `Joining`, `Ready`,
 `ScalingDown`), the cluster ticket clients can use, the epoch, member and
