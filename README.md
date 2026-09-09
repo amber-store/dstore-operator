@@ -81,7 +81,7 @@ operator image:
 
 ```
 helm install dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator \
-  --version 0.1.6 --namespace dstore-system --create-namespace
+  --version 0.1.7 --namespace dstore-system --create-namespace
 ```
 
 This installs the `DstoreCluster` CRD, the operator with its RBAC, and a
@@ -99,7 +99,7 @@ metrics Service. Useful values (`helm show values oci://ghcr.io/amber-store/char
 Then create a cluster:
 
 ```
-kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.2
+kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.3
 kubectl get dsc -w
 ```
 
