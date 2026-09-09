@@ -148,6 +148,13 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, rol
 	if c.Spec.GCInterval != "" {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_GC_INTERVAL", Value: c.Spec.GCInterval})
 	}
+	// Relays: the entrypoint follows the CLI default unless told otherwise,
+	// and --no-relay wins over --relay there too.
+	if c.Spec.NoRelay {
+		env = append(env, corev1.EnvVar{Name: "DSTORE_NO_RELAY", Value: "1"})
+	} else if c.Spec.Relay != "" {
+		env = append(env, corev1.EnvVar{Name: "DSTORE_RELAY", Value: c.Spec.Relay})
+	}
 	if len(c.Spec.ExtraArgs) > 0 {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_EXTRA_ARGS", Value: joinArgs(c.Spec.ExtraArgs)})
 	}

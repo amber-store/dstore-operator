@@ -559,6 +559,43 @@ func TestExtraArgs(t *testing.T) {
 	}
 }
 
+// TestRelay checks the relay knobs: by default the node image's own
+// default applies (no relay env), spec.relay names a relay, and
+// spec.noRelay turns relays off.
+func TestRelay(t *testing.T) {
+	h := newHarness(t, 1)
+	h.step()
+	h.step()
+	env := h.env(0)
+	if _, ok := env["DSTORE_RELAY"]; ok {
+		t.Fatalf("DSTORE_RELAY set by default: %q", env["DSTORE_RELAY"].Value)
+	}
+	if _, ok := env["DSTORE_NO_RELAY"]; ok {
+		t.Fatalf("DSTORE_NO_RELAY set by default: %q", env["DSTORE_NO_RELAY"].Value)
+	}
+	c := h.cluster()
+	c.Spec.Relay = "https://relay.example.com"
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	if got := h.env(0)["DSTORE_RELAY"].Value; got != "https://relay.example.com" {
+		t.Fatalf("DSTORE_RELAY %q", got)
+	}
+	c = h.cluster()
+	c.Spec.Relay = ""
+	c.Spec.NoRelay = true
+	if err := h.c.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	h.step()
+	env = h.env(0)
+	if _, ok := env["DSTORE_RELAY"]; ok || env["DSTORE_NO_RELAY"].Value != "1" {
+		t.Fatalf("relay env %+v %+v", env["DSTORE_RELAY"], env["DSTORE_NO_RELAY"])
+	}
+}
+
 // TestUpgradeRollsOnlyChangedNodes covers an operator upgrade over a
 // cluster whose Deployments were written without the spec hash (#4):
 // a Deployment whose template already matches is annotated in place

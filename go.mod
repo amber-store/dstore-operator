@@ -3,7 +3,7 @@ module github.com/amber-store/dstore-operator
 go 1.26.5
 
 require (
-	github.com/amber-store/dstore v0.0.0-20260908170800-92761501bf18
+	github.com/amber-store/dstore v0.1.2
 	github.com/tmc/go-iroh v0.2.0
 	k8s.io/api v0.33.0
 	k8s.io/apimachinery v0.33.0

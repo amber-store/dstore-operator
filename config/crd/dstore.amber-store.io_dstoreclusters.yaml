@@ -66,6 +66,12 @@ spec:
                 port:
                   type: integer
                   description: UDP port every node binds (on the host with hostNetwork) and advertises (default 4433)
+                relay:
+                  type: string
+                  description: URL of the iroh relay the nodes fall back to and advertise in the ticket; empty means the node image's default (the built-in relay map)
+                noRelay:
+                  type: boolean
+                  description: run the nodes with direct addresses only, no relay
                 hostNetwork:
                   type: boolean
                   description: run the nodes on their hosts' network stack and advertise the host IP, for direct iroh connections (default true)
