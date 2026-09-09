@@ -109,11 +109,11 @@ func desiredService(c *dstorev1.DstoreCluster, i int32) *corev1.Service {
 	}
 }
 
-// desiredDeployment renders node i's Deployment. clusterIP is the node's
-// Service address; with the host network the node advertises its host's
-// IP instead, taken from the pod's status. role selects what the
+// desiredDeployment renders node i's Deployment. The node advertises its
+// own interface addresses (the host's with the host network, the pod's
+// otherwise); the operator passes none in. role selects what the
 // entrypoint does on a fresh store.
-func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, role string) *appsv1.Deployment {
+func desiredDeployment(c *dstorev1.DstoreCluster, i int32, role string) *appsv1.Deployment {
 	labels := nodeLabels(c, i)
 	port := c.Spec.PortOrDefault()
 	hostNet := c.Spec.HostNetworkOrDefault()
@@ -125,23 +125,13 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, rol
 	env := []corev1.EnvVar{
 		{Name: "DSTORE_STORE", Value: storeMount},
 		{Name: "DSTORE_PORT", Value: strconv.Itoa(int(port))},
-	}
-	if hostNet {
-		env = append(env,
-			corev1.EnvVar{Name: "DSTORE_HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
-			corev1.EnvVar{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("$(DSTORE_HOST_IP):%d", port)},
-		)
-	} else {
-		env = append(env, corev1.EnvVar{Name: "DSTORE_ADVERTISE", Value: fmt.Sprintf("%s:%d", clusterIP, port)})
-	}
-	env = append(env,
-		corev1.EnvVar{Name: "DSTORE_ROLE", Value: role},
-		corev1.EnvVar{Name: "DSTORE_WEIGHT", Value: strconv.Itoa(int(weightGiB(c)))},
-		corev1.EnvVar{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicationFactorOrDefault()))},
-		corev1.EnvVar{Name: "DSTORE_MIN_REPLICAS", Value: strconv.Itoa(int(minR))},
-		corev1.EnvVar{Name: "DSTORE_IDENTITY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		{Name: "DSTORE_ROLE", Value: role},
+		{Name: "DSTORE_WEIGHT", Value: strconv.Itoa(int(weightGiB(c)))},
+		{Name: "DSTORE_REPLICAS", Value: strconv.Itoa(int(c.Spec.ReplicationFactorOrDefault()))},
+		{Name: "DSTORE_MIN_REPLICAS", Value: strconv.Itoa(int(minR))},
+		{Name: "DSTORE_IDENTITY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: identitySecretName(c, i)}, Key: SecretKeyIdentity}}},
-	)
+	}
 	if len(c.Spec.Zones) > 0 {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_ZONE", Value: c.Spec.Zones[int(i)%len(c.Spec.Zones)]})
 	}

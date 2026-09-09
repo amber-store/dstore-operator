@@ -301,7 +301,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // spec.nodes are on their way out and are left alone.
 func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo) error {
 	for _, in := range sortedInfos(infos) {
-		if !in.exists || in.index >= c.Spec.Nodes || in.addr == "" {
+		if !in.exists || in.index >= c.Spec.Nodes {
 			continue
 		}
 		changed, err := r.ensureNode(ctx, c, in, nodeRole(in.index))
@@ -495,7 +495,7 @@ func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCl
 	if err := r.ensurePVC(ctx, c, in.index, pvcName(c, in.index), c.Spec.Storage.VolumeClaimTemplate); err != nil {
 		return false, err
 	}
-	want := desiredDeployment(c, in.index, in.addr, role)
+	want := desiredDeployment(c, in.index, role)
 	hash := specHash(want)
 	d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: want.Name, Namespace: want.Namespace}}
 	var generation int64

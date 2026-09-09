@@ -332,7 +332,7 @@ func TestBootstrapAndJoins(t *testing.T) {
 	for _, e := range d.Spec.Template.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
-	if env["DSTORE_ROLE"] != RoleJoin || env["DSTORE_WEIGHT"] != "100" || env["DSTORE_ADVERTISE"] == "" || env["DSTORE_REPLICAS"] != "3" || env["DSTORE_MIN_REPLICAS"] != "2" {
+	if env["DSTORE_ROLE"] != RoleJoin || env["DSTORE_WEIGHT"] != "100" || env["DSTORE_REPLICAS"] != "3" || env["DSTORE_MIN_REPLICAS"] != "2" {
 		t.Fatalf("env %v", env)
 	}
 	// Node 1 is still joining: no second join starts.
@@ -471,7 +471,8 @@ func TestInvalidReplication(t *testing.T) {
 }
 
 // TestHostNetwork checks the host-network pod shape and that a running
-// pod's host IP becomes the node's advertised and dialed address.
+// pod's host IP becomes the address the operator dials and reports. The
+// node advertises its own interface addresses: no address is passed in.
 func TestHostNetwork(t *testing.T) {
 	h := newHarness(t, 2)
 	h.step()
@@ -491,8 +492,10 @@ func TestHostNetwork(t *testing.T) {
 	for _, e := range ps.Containers[0].Env {
 		env[e.Name] = e
 	}
-	if env["DSTORE_ADVERTISE"].Value != "$(DSTORE_HOST_IP):4433" || env["DSTORE_HOST_IP"].ValueFrom.FieldRef.FieldPath != "status.hostIP" {
-		t.Fatalf("advertise env %+v %+v", env["DSTORE_ADVERTISE"], env["DSTORE_HOST_IP"])
+	for _, name := range []string{"DSTORE_ADVERTISE", "DSTORE_HOST_IP"} {
+		if e, ok := env[name]; ok {
+			t.Fatalf("%s passed to the node: %+v", name, e)
+		}
 	}
 	if _, ok := env["DSTORE_EXTRA_ARGS"]; ok {
 		t.Fatalf("extra args %q set without spec.extraArgs", env["DSTORE_EXTRA_ARGS"].Value)
@@ -534,8 +537,8 @@ func TestClusterNetwork(t *testing.T) {
 		t.Fatalf("host network used: %+v", ps)
 	}
 	for _, e := range ps.Containers[0].Env {
-		if e.Name == "DSTORE_ADVERTISE" && e.Value != "10.0.0.1:4433" {
-			t.Fatalf("advertise %q", e.Value)
+		if e.Name == "DSTORE_ADVERTISE" {
+			t.Fatalf("advertise %q passed to the node", e.Value)
 		}
 		if e.Name == "DSTORE_EXTRA_ARGS" {
 			t.Fatalf("extra args %q set without the host network", e.Value)
