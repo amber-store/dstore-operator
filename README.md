@@ -19,16 +19,12 @@ creates:
 - a **Deployment** (one replica, `Recreate`) running the node image with
   the identity, address, weight and role in its environment. By default
   the pod runs on its host's network stack (`hostNetwork`), binds
-  `spec.port` on the host IP and advertises that address, so peers and
+  `spec.port` on the host and advertises the host's IP, so peers and
   clients outside the Kubernetes network reach it directly over iroh;
   the port is declared as a `hostPort`, which keeps two nodes of a
-  cluster off the same host. The node binds the host IP rather than the
-  wildcard address (the operator passes `--bind` through
-  `DSTORE_EXTRA_ARGS`, ahead of `spec.extraArgs`) because replies to a
-  client on the same host would otherwise leave from the CNI bridge's
-  address and fail QUIC path validation. With `hostNetwork: false` the
-  node advertises its Service address instead and is reachable only
-  from inside the cluster network.
+  cluster off the same host. With `hostNetwork: false` the node
+  advertises its Service address instead and is reachable only from
+  inside the cluster network.
 
 The join dance (dstore's §8.1) is driven from the operator, which talks
 to the cluster through the dstore client library over iroh:
@@ -56,11 +52,13 @@ it. Claims are kept unless `storage.deleteVolumesOnScaleDown` is set.
 Any other spec change (`image`, `port`, `resources`, `env`, `extraArgs`,
 scheduling fields, …) is rolled out to the running nodes **one node at a
 time**: the operator rewrites a node's Deployment (which restarts that
-node, as each runs one replica with the `Recreate` strategy) and waits
-for it to be available again before touching the next. The spec a
-Deployment was last written from is recorded in its
-`dstore.amber-store.io/spec-hash` annotation, so an unchanged spec costs
-no writes. Node Services follow the spec the same way.
+node, as each runs one replica with the `Recreate` strategy) and moves
+on to the next only once that Deployment has observed the new spec and
+reports its new pod available. The spec a Deployment was last written
+from is recorded in its `dstore.amber-store.io/spec-hash` annotation,
+so an unchanged spec costs no writes, and a Deployment whose template
+already matches is annotated without a restart. Node Services follow
+the spec the same way.
 
 Deleting a `DstoreCluster` deletes its Deployments, Services and
 Secrets through owner references, but retained claims (the default) are
