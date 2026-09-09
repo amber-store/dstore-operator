@@ -71,6 +71,7 @@ type nodeInfo struct {
 	addr    string // ClusterIP; empty until the Service has one
 	hostIP  string // the running pod's host IP, with the host network
 	ready   bool   // Deployment has an available replica
+	settled bool   // Deployment has observed its spec and its new pod is available
 	exists  bool   // Deployment exists
 	joining bool   // a join Secret exists
 }
@@ -175,20 +176,20 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 	if len(members) == 0 {
-		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
+		return result(r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
 			s.Nodes = nodeStatuses(&c, infos, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Bootstrapping", "waiting for node 0 to start")
-		})
+		}))
 	}
 	cl, err := r.Dialer.Dial(ctx, members)
 	if err != nil {
 		log.Info("cluster not reachable yet", "error", err)
-		return r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
+		return result(r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
 			s.Nodes = nodeStatuses(&c, infos, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Unreachable", "cluster not reachable: "+err.Error())
-		})
+		}))
 	}
 	defer cl.Close()
 	v := cl.View()
@@ -227,7 +228,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		reply, err := cl.Admin(ctx, node.AdminRequest{Op: "token-create"})
 		if err != nil {
-			return r.requeue(), fmt.Errorf("token for node %d: %w", in.index, err)
+			return ctrl.Result{}, fmt.Errorf("token for node %d: %w", in.index, err)
 		}
 		seed := Ticket(members).Encode()
 		if err := r.ensureJoinSecret(ctx, &c, in.index, hex.EncodeToString(reply.Token), seed); err != nil {
@@ -252,7 +253,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				continue
 			}
 			if _, err := cl.Admin(ctx, node.AdminRequest{Op: "node-remove", Node: in.id[:], AllowUnsafe: true}); err != nil {
-				return r.requeue(), fmt.Errorf("remove node %d: %w", in.index, err)
+				return ctrl.Result{}, fmt.Errorf("remove node %d: %w", in.index, err)
 			}
 			log.Info("removal started", "node", in.index)
 			busy = true
@@ -292,9 +293,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // rollout brings the existing nodes' Deployments up to the spec, one
-// node at a time: an update restarts the node, and the next node waits
-// until the restarted one is available again. Nodes beyond spec.nodes
-// are on their way out and are left alone.
+// node at a time: a spec change restarts the node, so the pass stops
+// there, and later passes go past that node only once its Deployment
+// has observed the change and reports the new pod available. The
+// Deployment status read at the start of a pass is what gates it; the
+// stale status right after an update is never trusted. Nodes beyond
+// spec.nodes are on their way out and are left alone.
 func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo) error {
 	for _, in := range sortedInfos(infos) {
 		if !in.exists || in.index >= c.Spec.Nodes || in.addr == "" {
@@ -308,7 +312,7 @@ func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreClust
 			r.Log.Info("node updated", "cluster", client.ObjectKeyFromObject(c).String(), "node", in.index)
 			return nil
 		}
-		if !in.ready {
+		if !in.settled {
 			return nil
 		}
 	}
@@ -439,6 +443,11 @@ func (r *ClusterReconciler) observeDeployment(ctx context.Context, c *dstorev1.D
 	}
 	in.exists = true
 	in.ready = d.Status.AvailableReplicas > 0
+	replicas := int32(1)
+	if d.Spec.Replicas != nil {
+		replicas = *d.Spec.Replicas
+	}
+	in.settled = d.Status.ObservedGeneration >= d.Generation && d.Status.UpdatedReplicas == replicas && d.Status.AvailableReplicas == replicas
 	if c.Spec.HostNetworkOrDefault() {
 		var pods corev1.PodList
 		if err := r.List(ctx, &pods, client.InNamespace(c.Namespace), client.MatchingLabels(nodeLabels(c, in.index))); err == nil {
@@ -477,10 +486,11 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, c *dstorev1.DstoreClu
 }
 
 // ensureNode creates a node's claim and creates or updates its
-// Deployment. It reports whether the Deployment was written: an update
-// restarts the node (one replica, Recreate). The spec the operator last
-// wrote is recorded as a hash annotation, so an unchanged spec costs no
-// write and server-side defaults never look like drift.
+// Deployment. It reports whether the Deployment's spec changed, which
+// restarts the node (one replica, Recreate): a write that only adds the
+// hash annotation to a matching template does not count. The spec the
+// operator last wrote is recorded as a hash annotation, so an unchanged
+// spec costs no write and server-side defaults never look like drift.
 func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCluster, in *nodeInfo, role string) (bool, error) {
 	if err := r.ensurePVC(ctx, c, in.index, pvcName(c, in.index), c.Spec.Storage.VolumeClaimTemplate); err != nil {
 		return false, err
@@ -488,7 +498,9 @@ func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCl
 	want := desiredDeployment(c, in.index, in.addr, role)
 	hash := specHash(want)
 	d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: want.Name, Namespace: want.Namespace}}
+	var generation int64
 	res, err := controllerutil.CreateOrUpdate(ctx, r.Client, d, func() error {
+		generation = d.Generation
 		if d.Annotations[AnnotationSpecHash] == hash {
 			return nil
 		}
@@ -509,7 +521,8 @@ func (r *ClusterReconciler) ensureNode(ctx context.Context, c *dstorev1.DstoreCl
 		return false, err
 	}
 	in.exists = true
-	return res != controllerutil.OperationResultNone, nil
+	// The API server bumps the generation only when the spec changed.
+	return res == controllerutil.OperationResultCreated || d.Generation != generation, nil
 }
 
 func (r *ClusterReconciler) ensureJoinSecret(ctx context.Context, c *dstorev1.DstoreCluster, i int32, tokenHex, seed string) error {
@@ -571,14 +584,27 @@ func (r *ClusterReconciler) deleteNode(ctx context.Context, c *dstorev1.DstoreCl
 
 // ---- status ----
 
+// setStatus writes the status as a merge patch: Deployment and pod
+// events enqueue the cluster again while a status write is in flight,
+// and the next reconcile may read the cached copy from before it, so an
+// update with that copy's resourceVersion would conflict.
 func (r *ClusterReconciler) setStatus(ctx context.Context, c *dstorev1.DstoreCluster, fn func(s *dstorev1.DstoreClusterStatus)) error {
-	before := c.Status.DeepCopy()
+	orig := c.DeepCopy()
 	fn(&c.Status)
 	c.Status.ObservedGeneration = c.Generation
-	if equalStatus(before, &c.Status) {
+	if equalStatus(&orig.Status, &c.Status) {
 		return nil
 	}
-	return r.Status().Update(ctx, c)
+	return r.Status().Patch(ctx, c, client.MergeFrom(orig))
+}
+
+// result pairs a requeue with a status write or another error: the error
+// wins, so the reconciler never returns both a result and an error.
+func result(res ctrl.Result, err error) (ctrl.Result, error) {
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return res, nil
 }
 
 func equalStatus(a, b *dstorev1.DstoreClusterStatus) bool {

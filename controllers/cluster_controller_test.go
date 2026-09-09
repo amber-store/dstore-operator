@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dstorev1 "github.com/amber-store/dstore-operator/api/v1alpha1"
 	"github.com/amber-store/dstore/node"
@@ -115,13 +117,12 @@ func (d *fakeDialer) Dial(ctx context.Context, members []Member) (Cluster, error
 }
 
 type harness struct {
-	t      *testing.T
-	c      client.Client
-	r      *ClusterReconciler
-	fd     *fakeDialer
-	key    types.NamespacedName
-	ips    int
-	hashes map[string]string // Deployment name -> spec hash seen at the last step
+	t   *testing.T
+	c   client.Client
+	r   *ClusterReconciler
+	fd  *fakeDialer
+	key types.NamespacedName
+	ips int
 }
 
 func newHarness(t *testing.T, nodes int32) *harness {
@@ -138,16 +139,40 @@ func newHarness(t *testing.T, nodes int32) *harness {
 			Storage: dstorev1.StorageSpec{VolumeClaimTemplate: corev1.PersistentVolumeClaimSpec{
 				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("50Gi")}}}}},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(&dstorev1.DstoreCluster{}).Build()
+	// The API server bumps a Deployment's generation when its spec changes;
+	// the fake client does not, so the interceptor does.
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(&dstorev1.DstoreCluster{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if d, ok := obj.(*appsv1.Deployment); ok {
+					d.Generation = 1
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if d, ok := obj.(*appsv1.Deployment); ok {
+					var cur appsv1.Deployment
+					if err := cl.Get(ctx, client.ObjectKeyFromObject(d), &cur); err == nil {
+						d.Generation = cur.Generation
+						if !apiequality.Semantic.DeepEqual(cur.Spec, d.Spec) {
+							d.Generation++
+						}
+					}
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
 	fd := &fakeDialer{cluster: &fakeCluster{}}
 	r := &ClusterReconciler{Client: c, Dialer: fd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))}
-	return &harness{t: t, c: c, r: r, fd: fd, key: types.NamespacedName{Name: "demo", Namespace: "ns"}, hashes: map[string]string{}}
+	return &harness{t: t, c: c, r: r, fd: fd, key: types.NamespacedName{Name: "demo", Namespace: "ns"}}
 }
 
 // step reconciles once and then plays the cluster's part: Services get
-// ClusterIPs and Deployments become available. A Deployment whose spec
-// changed since the last step is unavailable for this step, as a
-// Recreate rollout would make it.
+// ClusterIPs, and the Deployment controller runs. A new Deployment's pod
+// is up within the step; a changed spec (a new generation) is observed
+// first and its recreated pod becomes available only at the next step,
+// so that within the reconcile the status still shows the old pod, as
+// it does on a real cluster.
 func (h *harness) step() {
 	h.t.Helper()
 	if _, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key}); err != nil {
@@ -166,16 +191,35 @@ func (h *harness) step() {
 	_ = h.c.List(context.Background(), &deps, client.InNamespace("ns"))
 	for i := range deps.Items {
 		d := &deps.Items[i]
-		hash := d.Annotations[AnnotationSpecHash]
-		available := int32(1)
-		if last, seen := h.hashes[d.Name]; seen && last != hash {
-			available = 0
+		st := &d.Status
+		switch {
+		case st.ObservedGeneration == 0:
+			st.ObservedGeneration, st.Replicas, st.UpdatedReplicas, st.AvailableReplicas = d.Generation, 1, 1, 1
+		case st.ObservedGeneration != d.Generation:
+			st.ObservedGeneration, st.UpdatedReplicas, st.AvailableReplicas = d.Generation, 1, 0
+		case st.AvailableReplicas == 0:
+			st.AvailableReplicas = 1
+		default:
+			continue
 		}
-		h.hashes[d.Name] = hash
-		if d.Status.AvailableReplicas != available {
-			d.Status.AvailableReplicas = available
-			_ = h.c.Status().Update(context.Background(), d)
-		}
+		_ = h.c.Status().Update(context.Background(), d)
+	}
+}
+
+// rewrite edits a node's Deployment behind the operator's back and
+// settles its status, as a Deployment written by an older operator would
+// look.
+func (h *harness) rewrite(i int32, fn func(d *appsv1.Deployment)) {
+	h.t.Helper()
+	d := h.deployment(i)
+	fn(d)
+	if err := h.c.Update(context.Background(), d); err != nil {
+		h.t.Fatal(err)
+	}
+	d = h.deployment(i)
+	d.Status.ObservedGeneration, d.Status.Replicas, d.Status.UpdatedReplicas, d.Status.AvailableReplicas = d.Generation, 1, 1, 1
+	if err := h.c.Status().Update(context.Background(), d); err != nil {
+		h.t.Fatal(err)
 	}
 }
 
@@ -450,12 +494,8 @@ func TestHostNetwork(t *testing.T) {
 	if env["DSTORE_ADVERTISE"].Value != "$(DSTORE_HOST_IP):4433" || env["DSTORE_HOST_IP"].ValueFrom.FieldRef.FieldPath != "status.hostIP" {
 		t.Fatalf("advertise env %+v %+v", env["DSTORE_ADVERTISE"], env["DSTORE_HOST_IP"])
 	}
-	// The node binds the advertised address, not the wildcard: bound to
-	// 0.0.0.0 on the host network, replies to a client on the same host
-	// would leave from the CNI bridge address and fail QUIC path
-	// validation (#1).
-	if env["DSTORE_EXTRA_ARGS"].Value != "--bind $(DSTORE_HOST_IP):4433" {
-		t.Fatalf("extra args %q", env["DSTORE_EXTRA_ARGS"].Value)
+	if _, ok := env["DSTORE_EXTRA_ARGS"]; ok {
+		t.Fatalf("extra args %q set without spec.extraArgs", env["DSTORE_EXTRA_ARGS"].Value)
 	}
 	// A running pod on host 192.168.1.10: the operator dials that first.
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-node-0-abc", Namespace: "ns", Labels: nodeLabels(h.cluster(), 0)},
@@ -503,9 +543,8 @@ func TestClusterNetwork(t *testing.T) {
 	}
 }
 
-// TestExtraArgsFollowBind checks that the user's extra args come after
-// the operator's, so a --bind of their own still wins.
-func TestExtraArgsFollowBind(t *testing.T) {
+// TestExtraArgs checks that spec.extraArgs reach the node as given.
+func TestExtraArgs(t *testing.T) {
 	h := newHarness(t, 1)
 	c := h.cluster()
 	c.Spec.Port = 4434
@@ -515,8 +554,49 @@ func TestExtraArgsFollowBind(t *testing.T) {
 	}
 	h.step()
 	h.step()
-	if got := h.env(0)["DSTORE_EXTRA_ARGS"].Value; got != "--bind $(DSTORE_HOST_IP):4434 --bind 127.0.0.1:4434" {
+	if got := h.env(0)["DSTORE_EXTRA_ARGS"].Value; got != "--bind 127.0.0.1:4434" {
 		t.Fatalf("extra args %q", got)
+	}
+}
+
+// TestUpgradeRollsOnlyChangedNodes covers an operator upgrade over a
+// cluster whose Deployments were written without the spec hash (#4):
+// a Deployment whose template already matches is annotated in place
+// without a restart, the changed ones roll one at a time, and the next
+// waits until the previous Deployment reports its new pod available,
+// not on the stale status of the same pass.
+func TestUpgradeRollsOnlyChangedNodes(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	for i := int32(0); i < 3; i++ {
+		h.rewrite(i, func(d *appsv1.Deployment) {
+			delete(d.Annotations, AnnotationSpecHash)
+			if i > 0 {
+				d.Spec.Template.Spec.Containers[0].Image = "dstore:old"
+			}
+		})
+	}
+	gen0 := h.deployment(0).Generation
+	h.step()
+	d0, d1, d2 := h.deployment(0), h.deployment(1), h.deployment(2)
+	if d0.Annotations[AnnotationSpecHash] == "" || d0.Generation != gen0 {
+		t.Fatalf("node 0 with an unchanged template restarted: generation %d -> %d", gen0, d0.Generation)
+	}
+	if h.image(1) != "dstore:test" || d1.Annotations[AnnotationSpecHash] == "" {
+		t.Fatalf("node 1 not rolled: %s", h.image(1))
+	}
+	if h.image(2) != "dstore:old" || d2.Annotations[AnnotationSpecHash] != "" {
+		t.Fatalf("node 2 rolled in the same pass as node 1")
+	}
+	// Node 1's Deployment has observed the change but its pod is not
+	// back: node 2 waits.
+	h.step()
+	if h.image(2) != "dstore:old" {
+		t.Fatal("node 2 rolled while node 1's new pod was not available")
+	}
+	h.step()
+	if h.image(2) != "dstore:test" {
+		t.Fatal("node 2 not rolled once node 1 settled")
 	}
 }
 

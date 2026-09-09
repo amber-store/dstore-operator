@@ -148,19 +148,8 @@ func desiredDeployment(c *dstorev1.DstoreCluster, i int32, clusterIP string, rol
 	if c.Spec.GCInterval != "" {
 		env = append(env, corev1.EnvVar{Name: "DSTORE_GC_INTERVAL", Value: c.Spec.GCInterval})
 	}
-	var args []string
-	if hostNet {
-		// Bind the advertised address rather than the wildcard. Bound to
-		// 0.0.0.0 on the host network, the kernel picks the source address
-		// of each reply by route, so a client on the same host (reached
-		// over the CNI bridge) gets replies from the bridge's address and
-		// QUIC path validation fails. The user's extra args come after, so
-		// a --bind of their own still wins.
-		args = append(args, "--bind", fmt.Sprintf("$(DSTORE_HOST_IP):%d", port))
-	}
-	args = append(args, c.Spec.ExtraArgs...)
-	if len(args) > 0 {
-		env = append(env, corev1.EnvVar{Name: "DSTORE_EXTRA_ARGS", Value: joinArgs(args)})
+	if len(c.Spec.ExtraArgs) > 0 {
+		env = append(env, corev1.EnvVar{Name: "DSTORE_EXTRA_ARGS", Value: joinArgs(c.Spec.ExtraArgs)})
 	}
 	if role == RoleJoin {
 		// The join secret is deleted once the node has joined; the
