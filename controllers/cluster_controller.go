@@ -18,6 +18,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dstorev1 "github.com/amber-store/dstore-operator/api/v1alpha1"
 	"github.com/amber-store/dstore/node"
@@ -41,6 +43,16 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		// Node pods are owned by their Deployments' ReplicaSets, not by the
+		// cluster; watch them by label so a pod landing on a host (and its
+		// host IP) is seen at once.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+			name := o.GetLabels()[LabelCluster]
+			if name == "" || o.GetLabels()[LabelApp] != AppName {
+				return nil
+			}
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: name, Namespace: o.GetNamespace()}}}
+		})).
 		Complete(r)
 }
 
