@@ -6,7 +6,7 @@ spec:
   nodes: 3
   replicationFactor: 3
   minReplicationFactor: 2
-  image: ghcr.io/amber-store/dstore:v0.1.4
+  image: ghcr.io/amber-store/dstore:v0.1.5
   capacityGiB: 100
   port: 4433
   hostNetwork: true
