@@ -17,14 +17,16 @@ creates:
 - a **PersistentVolumeClaim** from `storage.volumeClaimTemplate`, holding
   the packstore, the meta database, the identity and the acceptor state;
 - a **Deployment** (one replica, `Recreate`) running the node image with
-  the identity, address, weight and role in its environment. By default
-  the pod runs on its host's network stack (`hostNetwork`), binds
-  `spec.port` on the host and advertises the host's IP, so peers and
-  clients outside the Kubernetes network reach it directly over iroh;
-  the port is declared as a `hostPort`, which keeps two nodes of a
-  cluster off the same host. With `hostNetwork: false` the node
-  advertises its Service address instead and is reachable only from
-  inside the cluster network.
+  the identity, weight and role in its environment. The node advertises
+  its own interface addresses; the operator passes none in. By default
+  the pod runs on its host's network stack (`hostNetwork`) and binds
+  `spec.port` on the host, so the node advertises the host's addresses
+  and peers and clients outside the Kubernetes network reach it
+  directly over iroh; the port is declared as a `hostPort`, which keeps
+  two nodes of a cluster off the same host. With `hostNetwork: false`
+  the node advertises its pod address and is reachable only from inside
+  the cluster network; the operator itself dials it through its
+  Service.
 
 The join dance (dstore's §8.1) is driven from the operator, which talks
 to the cluster through the dstore client library over iroh:
@@ -81,7 +83,7 @@ operator image:
 
 ```
 helm install dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator \
-  --version 0.1.7 --namespace dstore-system --create-namespace
+  --version 0.1.8 --namespace dstore-system --create-namespace
 ```
 
 This installs the `DstoreCluster` CRD, the operator with its RBAC, and a
@@ -112,8 +114,8 @@ Without Helm, `make deploy` applies the plain manifests under `config/`.
 The node image is built and published by the
 [dstore](https://github.com/amber-store/dstore) repository's release
 workflow (`ghcr.io/amber-store/dstore:<tag>`); its entrypoint reads the
-`DSTORE_ROLE`, `DSTORE_SEED`, `DSTORE_TOKEN`, `DSTORE_IDENTITY` and
-`DSTORE_ADVERTISE` variables the operator sets, and `DSTORE_RELAY` or
+`DSTORE_ROLE`, `DSTORE_SEED`, `DSTORE_TOKEN` and `DSTORE_IDENTITY`
+variables the operator sets, and `DSTORE_RELAY` or
 `DSTORE_NO_RELAY` when `spec.relay` or `spec.noRelay` is set. Since node
 image v0.1.2 the nodes use the built-in relay map unless told otherwise,
 so a cluster's ticket carries a relay URL and clients outside the
@@ -131,8 +133,8 @@ cluster network, without relays) and needs UDP reachability to them.
 | `replicationFactor` | R: the number of nodes that own each object (default 3; capped by the node count in placement) |
 | `minReplicationFactor` | owners that must hold an object before a write or reference is accepted (default max(R−1, 2)) |
 | `image`, `imagePullPolicy`, `resources`, `env`, `nodeSelector`, `tolerations`, `affinity` | the node pods |
-| `port` | UDP port every node binds, on the host with `hostNetwork`, and advertises (default 4433) |
-| `hostNetwork` | run nodes on the host network and advertise the host IP for direct iroh connections (default true) |
+| `port` | UDP port every node binds, on the host with `hostNetwork` (default 4433) |
+| `hostNetwork` | run nodes on the host network, so they advertise the host's addresses for direct iroh connections (default true) |
 | `relay` | URL of the iroh relay the nodes fall back to and put in the ticket; empty means the node image's default, the built-in relay map |
 | `noRelay` | direct addresses only: no relay is used or advertised |
 | `storage.volumeClaimTemplate` | claim spec for each node's volume (data and acceptor state) |
