@@ -37,6 +37,15 @@ type DstoreClusterSpec struct {
 	// Port is the UDP port every node binds and advertises. With
 	// hostNetwork it is bound on the host itself. Default 4433.
 	Port int32 `json:"port,omitempty"`
+	// Relay is the URL of the iroh relay the nodes fall back to when no
+	// direct path works; the ticket then carries it, so clients outside
+	// the network can reach the nodes. Empty means the node image's
+	// default, the built-in relay map.
+	Relay string `json:"relay,omitempty"`
+	// NoRelay runs the nodes with direct addresses only: no relay is used
+	// or advertised, so only clients that reach a node's address can
+	// connect.
+	NoRelay bool `json:"noRelay,omitempty"`
 	// HostNetwork runs the node pods on their host's network stack, with
 	// the port bound on the host and the host's IP advertised, so that
 	// peers and clients can open direct iroh connections to the nodes.

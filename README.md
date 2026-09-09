@@ -81,7 +81,7 @@ operator image:
 
 ```
 helm install dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator \
-  --version 0.1.5 --namespace dstore-system --create-namespace
+  --version 0.1.6 --namespace dstore-system --create-namespace
 ```
 
 This installs the `DstoreCluster` CRD, the operator with its RBAC, and a
@@ -99,7 +99,7 @@ metrics Service. Useful values (`helm show values oci://ghcr.io/amber-store/char
 Then create a cluster:
 
 ```
-kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.0
+kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.2
 kubectl get dsc -w
 ```
 
@@ -113,9 +113,14 @@ The node image is built and published by the
 [dstore](https://github.com/amber-store/dstore) repository's release
 workflow (`ghcr.io/amber-store/dstore:<tag>`); its entrypoint reads the
 `DSTORE_ROLE`, `DSTORE_SEED`, `DSTORE_TOKEN`, `DSTORE_IDENTITY` and
-`DSTORE_ADVERTISE` variables the operator sets. The operator needs UDP
-reachability to the node Services (it runs as a dstore client inside the
-cluster network, without relays).
+`DSTORE_ADVERTISE` variables the operator sets, and `DSTORE_RELAY` or
+`DSTORE_NO_RELAY` when `spec.relay` or `spec.noRelay` is set. Since node
+image v0.1.2 the nodes use the built-in relay map unless told otherwise,
+so a cluster's ticket carries a relay URL and clients outside the
+network can reach it; note that such a cluster is writable by anyone who
+learns its ticket until dstore's client allowlist lands. The operator
+itself dials the nodes directly (it runs as a dstore client inside the
+cluster network, without relays) and needs UDP reachability to them.
 
 ## Spec
 
@@ -128,6 +133,8 @@ cluster network, without relays).
 | `image`, `imagePullPolicy`, `resources`, `env`, `nodeSelector`, `tolerations`, `affinity` | the node pods |
 | `port` | UDP port every node binds, on the host with `hostNetwork`, and advertises (default 4433) |
 | `hostNetwork` | run nodes on the host network and advertise the host IP for direct iroh connections (default true) |
+| `relay` | URL of the iroh relay the nodes fall back to and put in the ticket; empty means the node image's default, the built-in relay map |
+| `noRelay` | direct addresses only: no relay is used or advertised |
 | `storage.volumeClaimTemplate` | claim spec for each node's volume (data and acceptor state) |
 | `storage.deleteVolumesOnScaleDown` | delete a removed node's claims |
 | `zones` | failure domain of node *i* is `zones[i % len]` |
