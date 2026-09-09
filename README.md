@@ -101,7 +101,7 @@ metrics Service. Useful values (`helm show values oci://ghcr.io/amber-store/char
 Then create a cluster:
 
 ```
-kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.5
+kubectl apply -f config/samples/cluster.yaml   # three nodes on ghcr.io/amber-store/dstore:v0.1.6
 kubectl get dsc -w
 ```
 

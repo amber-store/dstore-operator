@@ -3,7 +3,7 @@ module github.com/amber-store/dstore-operator
 go 1.26.5
 
 require (
-	github.com/amber-store/dstore v0.1.5
+	github.com/amber-store/dstore v0.1.6
 	github.com/tmc/go-iroh v0.2.0
 	k8s.io/api v0.33.0
 	k8s.io/apimachinery v0.33.0
@@ -18,8 +18,8 @@ require (
 	github.com/PlakarKorp/go-cdc-chunkers v1.0.3 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
 	github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54 // indirect
-	github.com/amber-store/core v0.0.6 // indirect
-	github.com/amber-store/transport-iroh v0.3.0 // indirect
+	github.com/amber-store/core v0.0.7 // indirect
+	github.com/amber-store/transport-iroh v0.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cockroachdb/crlib v0.0.0-20241112164430-1264a2edc35b // indirect
