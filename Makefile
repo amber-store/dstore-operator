@@ -1,6 +1,6 @@
 IMG ?= ghcr.io/amber-store/dstore-operator:latest
 
-CHART_VERSION ?= 0.1.6
+CHART_VERSION ?= 0.1.7
 HELM ?= helm
 
 .PHONY: build test docker-build install deploy sample chart chart-push
