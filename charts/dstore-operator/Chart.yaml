@@ -2,8 +2,8 @@ apiVersion: v2
 name: dstore-operator
 description: Kubernetes operator that runs dstore clusters, a distributed amber store over iroh
 type: application
-version: 0.1.5
-appVersion: "v0.1.5"
+version: 0.1.6
+appVersion: "v0.1.6"
 home: https://github.com/amber-store/dstore-operator
 sources:
   - https://github.com/amber-store/dstore-operator
