@@ -83,7 +83,7 @@ operator image:
 
 ```
 helm install dstore-operator oci://ghcr.io/amber-store/charts/dstore-operator \
-  --version 0.1.10 --namespace dstore-system --create-namespace
+  --version 0.1.11 --namespace dstore-system --create-namespace
 ```
 
 This installs the `DstoreCluster` CRD, the operator with its RBAC, and a
