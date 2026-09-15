@@ -14,8 +14,8 @@ github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f h1:JjxwchlO
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f/go.mod h1:tMDTce/yLLN/SK8gMOxQfnyeMeCg8KGzp0D1cbECEeo=
 github.com/amber-store/core v0.0.7 h1:pL3fj5XwACfg5YnfsZBGNlb92uyKqDccXqmTzXizSRw=
 github.com/amber-store/core v0.0.7/go.mod h1:AqoKse+rvzViiShDyD80PRUZFXNMNy4jc7VbilsV4k4=
-github.com/amber-store/dstore v0.1.7 h1:8xIf+CF+Vk23DNx+2U7yw44kQgccyuAcJRYHXCZceok=
-github.com/amber-store/dstore v0.1.7/go.mod h1:VkRAsfs50Ldb0K+ZMDq9YLsooKcDfegbvUHbJPgLOGY=
+github.com/amber-store/dstore v0.1.8 h1:c/52XdoWbpaL0VjyF/YQpvsfeiUASuHWsa+8sRX7mIc=
+github.com/amber-store/dstore v0.1.8/go.mod h1:VkRAsfs50Ldb0K+ZMDq9YLsooKcDfegbvUHbJPgLOGY=
 github.com/amber-store/transport-iroh v0.4.0 h1:W6YOE/wjL7voSjSL5NuKfW+0eDUYX1fOwwPgx9uJ1ec=
 github.com/amber-store/transport-iroh v0.4.0/go.mod h1:dXfyaV8SGvL2q/b0BADh3HGU72rNsr0aADgR9oQIpAM=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
