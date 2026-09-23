@@ -12,10 +12,10 @@ github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54 h1:bsU8Tzxr/P
 github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54/go.mod h1:0tr7FllbE9gJkHq7CVeeDDFAFKQVy5RnCSSNBOvdqbc=
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f h1:JjxwchlOepwsUWcQwD2mLUAGE9aCp0/ehy6yCHFBOvo=
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f/go.mod h1:tMDTce/yLLN/SK8gMOxQfnyeMeCg8KGzp0D1cbECEeo=
-github.com/amber-store/core v0.0.9 h1:KjIWeWYiqzU+42+zNVYoWZ/uvBA46scqeRIOwAczu6I=
-github.com/amber-store/core v0.0.9/go.mod h1:AqoKse+rvzViiShDyD80PRUZFXNMNy4jc7VbilsV4k4=
-github.com/amber-store/dstore v0.1.10 h1:Bwi/wNYxzfY1xNb07tlxVlLB7dRgykUcSlepNe5sLWg=
-github.com/amber-store/dstore v0.1.10/go.mod h1:JsI+T9gt+6qhMvqcROM5LI1fzOn6DP/BrJ7AUaQSwZY=
+github.com/amber-store/core v0.0.10 h1:88vE3vqRTzJ6Q4qfM7K28K0AxCoZhnpswjU/n9U9avs=
+github.com/amber-store/core v0.0.10/go.mod h1:gE9TthlFLGnB7SBSCzeMnwjnAGCUbkr+oB/QIllz5m4=
+github.com/amber-store/dstore v0.1.11 h1:yHSVnMB05C4vXKiOY4yvTUbcARpyowW2eknJrshcqsI=
+github.com/amber-store/dstore v0.1.11/go.mod h1:QOqENHK8k+6DXxJDzX17V18ruyLcXm8nVcZ1g28wOdc=
 github.com/amber-store/transport-iroh v0.4.0 h1:W6YOE/wjL7voSjSL5NuKfW+0eDUYX1fOwwPgx9uJ1ec=
 github.com/amber-store/transport-iroh v0.4.0/go.mod h1:dXfyaV8SGvL2q/b0BADh3HGU72rNsr0aADgR9oQIpAM=
 github.com/aymanbagabas/go-udiff v0.4.1 h1:OEIrQ8maEeDBXQDoGCbbTTXYJMYRCRO1fnodZ12Gv5o=
