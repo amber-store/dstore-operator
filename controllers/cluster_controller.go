@@ -161,7 +161,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.requeue(), nil
 	}
 	if !n0.exists {
-		if _, err := r.ensureNode(ctx, &c, n0, RoleInit); err != nil {
+		if _, err := r.ensureNode(ctx, &c, n0, nodeRole(&c, 0)); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else if err := r.rollout(ctx, &c, infos); err != nil {
@@ -178,30 +178,50 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if len(members) == 0 {
 		return result(r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
-			s.Nodes = nodeStatuses(&c, infos, nil)
+			s.Nodes = nodeStatuses(&c, infos, nil, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Bootstrapping", "waiting for node 0 to start")
 		}))
 	}
-	cl, err := r.Dialer.Dial(ctx, members)
+	cl, foreign, err := r.dialCluster(ctx, &c, infos, members)
 	if err != nil {
 		log.Info("cluster not reachable yet", "error", err)
 		return result(r.requeue(), r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) {
 			s.Phase = dstorev1.PhaseBootstrapping
-			s.Nodes = nodeStatuses(&c, infos, nil)
+			s.Nodes = nodeStatuses(&c, infos, nil, nil)
 			setCondition(s, "Ready", metav1.ConditionFalse, "Unreachable", "cluster not reachable: "+err.Error())
 		}))
 	}
 	defer cl.Close()
 	v := cl.View()
-	if v == nil {
-		return r.requeue(), nil
+	// Record the cluster before anything joins it; from here on node 0
+	// joins like any other node. Nodes answering for another cluster are
+	// told apart from the next pass on, so none is joined again in this one.
+	recording := c.Status.ClusterID == ""
+	if recording {
+		cid := hex.EncodeToString(v.ClusterID)
+		if err := r.setStatus(ctx, &c, func(s *dstorev1.DstoreClusterStatus) { s.ClusterID = cid }); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("cluster recorded", "clusterID", cid)
 	}
+	// Foreign nodes stay out of the ticket and out of the join seeds.
+	var live []Member
+	for _, m := range members {
+		if !foreign[m.ID] {
+			live = append(live, m)
+		}
+	}
+	members = live
 	busy := v.Pending != nil || v.VoterSync == view.VoterSyncPending || len(v.Ramps) > 0
 	phase := dstorev1.PhaseReady
 
 	// Joins: one at a time, only when the cluster is idle.
 	for _, in := range sortedInfos(infos) {
 		if in.index >= c.Spec.Nodes {
+			continue
+		}
+		if foreign[in.id] {
+			phase = dstorev1.PhaseDegraded
 			continue
 		}
 		if _, member := v.Node(in.id); member {
@@ -211,11 +231,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 			continue
 		}
-		if in.index == 0 {
-			continue // node 0 bootstrapped the cluster; it is in the view or the view is stale
+		if phase != dstorev1.PhaseDegraded {
+			phase = dstorev1.PhaseJoining
 		}
-		phase = dstorev1.PhaseJoining
-		if in.exists {
+		if in.joining || in.exists && recording {
 			// Joining (or restarted before joining); wait.
 			busy = true
 			continue
@@ -226,6 +245,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if in.addr == "" {
 			continue
 		}
+		// A node that runs but is neither a member nor joining lost its
+		// store after its old entry was removed (dstore node remove
+		// --dead): it joins again, under the same identity, like a new
+		// node.
+		rejoin := in.exists
 		reply, err := cl.Admin(ctx, node.AdminRequest{Op: "token-create"})
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("token for node %d: %w", in.index, err)
@@ -234,10 +258,17 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.ensureJoinSecret(ctx, &c, in.index, hex.EncodeToString(reply.Token), seed); err != nil {
 			return ctrl.Result{}, err
 		}
-		if _, err := r.ensureNode(ctx, &c, in, RoleJoin); err != nil {
+		changed, err := r.ensureNode(ctx, &c, in, RoleJoin)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("join started", "node", in.index, "id", view.ShortID(in.id))
+		if rejoin && !changed {
+			// The pod read its environment before the join Secret existed.
+			if err := r.restartNode(ctx, &c, in.index); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		log.Info("join started", "node", in.index, "id", view.ShortID(in.id), "rejoin", rejoin)
 		busy = true
 	}
 
@@ -275,10 +306,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		s.Voters = int32(len(v.Voters))
 		s.Ticket = Ticket(members).Encode()
 		s.Transition = transitionText(v)
-		s.Nodes = nodeStatuses(&c, infos, v)
-		if phase == dstorev1.PhaseReady {
+		s.Nodes = nodeStatuses(&c, infos, v, foreign)
+		switch phase {
+		case dstorev1.PhaseReady:
 			setCondition(s, "Ready", metav1.ConditionTrue, "Ready", fmt.Sprintf("%d members, %d voters", len(v.Nodes), len(v.Voters)))
-		} else {
+		case dstorev1.PhaseDegraded:
+			setCondition(s, "Ready", metav1.ConditionFalse, "ForeignNode", foreignText(&c, infos, foreign))
+		default:
 			setCondition(s, "Ready", metav1.ConditionFalse, phase, transitionText(v))
 		}
 	}); err != nil {
@@ -304,7 +338,7 @@ func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreClust
 		if !in.exists || in.index >= c.Spec.Nodes {
 			continue
 		}
-		changed, err := r.ensureNode(ctx, c, in, nodeRole(in.index))
+		changed, err := r.ensureNode(ctx, c, in, nodeRole(c, in.index))
 		if err != nil {
 			return err
 		}
@@ -317,6 +351,105 @@ func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreClust
 		}
 	}
 	return nil
+}
+
+// dialCluster dials the running members and returns a handle on the
+// recorded cluster. The first member to answer usually speaks for it;
+// when it does not (a node that lost its store and bootstrapped a
+// cluster of its own under its old identity, say), each member is dialed
+// alone and those answering for another cluster are returned as
+// foreign. Before the cluster is recorded, the view taken is the one
+// listing the most existing nodes, so that the operator never adopts
+// such a stray cluster over the real one.
+func (r *ClusterReconciler) dialCluster(ctx context.Context, c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, members []Member) (Cluster, map[view.NodeID]bool, error) {
+	want := c.Status.ClusterID
+	// listed counts the existing nodes a view lists.
+	listed := func(v *view.View) int {
+		n := 0
+		for _, in := range infos {
+			if _, ok := v.Node(in.id); ok && in.exists && in.index < c.Spec.Nodes {
+				n++
+			}
+		}
+		return n
+	}
+	existing := 0
+	for _, in := range infos {
+		if in.exists && in.index < c.Spec.Nodes {
+			existing++
+		}
+	}
+	// score ranks a view: -1 is another cluster's.
+	score := func(v *view.View) int {
+		if want != "" {
+			if hex.EncodeToString(v.ClusterID) != want {
+				return -1
+			}
+			return 1
+		}
+		return listed(v)
+	}
+	cl, err := r.Dialer.Dial(ctx, members)
+	if err != nil {
+		return nil, nil, err
+	}
+	if v := cl.View(); v != nil && (want != "" && score(v) > 0 || want == "" && listed(v) == existing) {
+		return cl, nil, nil
+	}
+	cl.Close()
+	foreign := map[view.NodeID]bool{}
+	var best Cluster
+	bestScore := -1
+	for _, m := range members {
+		one, err := r.Dialer.Dial(ctx, []Member{m})
+		if err != nil {
+			continue
+		}
+		v := one.View()
+		if v == nil {
+			one.Close()
+			continue
+		}
+		sc := score(v)
+		if sc < 0 {
+			foreign[m.ID] = true
+		}
+		if sc > bestScore {
+			if best != nil {
+				best.Close()
+			}
+			best, bestScore = one, sc
+			continue
+		}
+		one.Close()
+	}
+	if best == nil {
+		if want != "" {
+			return nil, nil, fmt.Errorf("no running node answers for cluster %s", want)
+		}
+		return nil, nil, fmt.Errorf("no running node answered")
+	}
+	return best, foreign, nil
+}
+
+// restartNode deletes node i's pod so that its Deployment starts a new
+// one, which reads the environment afresh.
+func (r *ClusterReconciler) restartNode(ctx context.Context, c *dstorev1.DstoreCluster, i int32) error {
+	return client.IgnoreNotFound(r.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(c.Namespace), client.MatchingLabels(nodeLabels(c, i))))
+}
+
+func foreignText(c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, foreign map[view.NodeID]bool) string {
+	var out string
+	for _, in := range sortedInfos(infos) {
+		if !foreign[in.id] {
+			continue
+		}
+		if out != "" {
+			out += "; "
+		}
+		out += fmt.Sprintf("node %d (%s) answers for another cluster than %s", in.index, view.ShortID(in.id), c.Status.ClusterID)
+	}
+	return out + ": its store was lost and it started a cluster of its own; remove its old entry (dstore node remove --dead ID) and wipe its store, and the operator joins it again"
 }
 
 func transitionText(v *view.View) string {
@@ -339,11 +472,13 @@ func sortedInfos(infos map[int32]*nodeInfo) []*nodeInfo {
 	return out
 }
 
-func nodeStatuses(c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, v *view.View) []dstorev1.NodeStatus {
+func nodeStatuses(c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, v *view.View, foreign map[view.NodeID]bool) []dstorev1.NodeStatus {
 	var out []dstorev1.NodeStatus
 	for _, in := range sortedInfos(infos) {
 		st := dstorev1.NodeStatus{Index: in.index, ID: view.IDString(in.id), Address: in.address(c.Spec.HostNetworkOrDefault()), Phase: dstorev1.NodePending}
-		if v != nil {
+		if foreign[in.id] {
+			st.Phase = dstorev1.NodeForeign
+		} else if v != nil {
 			if _, ok := v.Node(in.id); ok {
 				st.Phase = dstorev1.NodeMember
 				st.Voter = v.IsVoter(in.id)
@@ -608,7 +743,7 @@ func result(res ctrl.Result, err error) (ctrl.Result, error) {
 }
 
 func equalStatus(a, b *dstorev1.DstoreClusterStatus) bool {
-	if a.Phase != b.Phase || a.Ticket != b.Ticket || a.Epoch != b.Epoch || a.Members != b.Members || a.Voters != b.Voters || a.Transition != b.Transition || a.ObservedGeneration != b.ObservedGeneration || len(a.Nodes) != len(b.Nodes) || len(a.Conditions) != len(b.Conditions) {
+	if a.Phase != b.Phase || a.ClusterID != b.ClusterID || a.Ticket != b.Ticket || a.Epoch != b.Epoch || a.Members != b.Members || a.Voters != b.Voters || a.Transition != b.Transition || a.ObservedGeneration != b.ObservedGeneration || len(a.Nodes) != len(b.Nodes) || len(a.Conditions) != len(b.Conditions) {
 		return false
 	}
 	for i := range a.Nodes {

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -101,12 +102,18 @@ type fakeDialer struct {
 	cluster *fakeCluster
 	dials   int
 	fail    bool
+	// strays are nodes that answer for a cluster of their own: a dial
+	// whose first member is one of them reaches that cluster.
+	strays map[view.NodeID]*fakeCluster
 }
 
 func (d *fakeDialer) Dial(ctx context.Context, members []Member) (Cluster, error) {
 	d.dials++
 	if d.fail {
 		return nil, fmt.Errorf("unreachable")
+	}
+	if f, ok := d.strays[members[0].ID]; ok {
+		return f, nil
 	}
 	if d.cluster.v == nil {
 		// First contact: node 0 initialised the cluster alone.
@@ -729,5 +736,150 @@ func TestRequeueWhileTransitionPending(t *testing.T) {
 	res, err = h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key})
 	if err != nil || res.RequeueAfter != h.r.requeue().RequeueAfter {
 		t.Fatalf("pending transition polled every %v", res.RequeueAfter)
+	}
+}
+
+// stray makes node i answer for a one-node cluster of its own, as node 0
+// does after its store is wiped and it bootstraps again.
+func (h *harness) stray(i int32) {
+	id := h.nodeID(i)
+	if h.fd.strays == nil {
+		h.fd.strays = map[view.NodeID]*fakeCluster{}
+	}
+	h.fd.strays[id] = &fakeCluster{v: &view.View{ClusterID: []byte("stray"), Incarnation: 1, Epoch: 1, Replicas: 3,
+		Nodes: []view.Node{{ID: id[:], Weight: 10, Writable: true}}, Voters: []view.Voter{{ID: id[:], Since: 1}}}}
+}
+
+func (h *harness) ticketHas(i int32) bool {
+	h.t.Helper()
+	tk, err := ticket.Parse(h.cluster().Status.Ticket)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	id := h.nodeID(i)
+	for _, m := range tk.Members {
+		if view.NodeID(m.ID) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestNodeZeroJoinsOnceRecorded: the operator records the cluster node 0
+// bootstrapped, and from then on node 0 starts with role join, so a node
+// 0 that loses its store can never create a second cluster.
+func TestNodeZeroJoinsOnceRecorded(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	if got := h.cluster().Status.ClusterID; got != hex.EncodeToString([]byte("c")) {
+		t.Fatalf("cluster id %q", got)
+	}
+	h.step()
+	h.step()
+	if role := h.env(0)["DSTORE_ROLE"].Value; role != RoleJoin {
+		t.Fatalf("node 0 role %q after the cluster was recorded", role)
+	}
+	// Node 0's Deployment disappears: it comes back joining, not initialising.
+	if err := h.c.Delete(context.Background(), h.deployment(0)); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	if role := h.env(0)["DSTORE_ROLE"].Value; role != RoleJoin {
+		t.Fatalf("recreated node 0 role %q", role)
+	}
+}
+
+// TestStrayNode: node 0 lost its store and bootstrapped a cluster of its
+// own under its old identity. It answers first, but the operator keeps
+// to the recorded cluster, reports node 0 as Foreign, leaves it out of
+// the ticket and does not try to join it.
+func TestStrayNode(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	h.stray(0)
+	tokens := h.fd.cluster.tokens
+	h.step()
+	c := h.cluster()
+	if c.Status.Phase != dstorev1.PhaseDegraded || c.Status.Nodes[0].Phase != dstorev1.NodeForeign {
+		t.Fatalf("status %+v", c.Status)
+	}
+	if c.Status.Members != 3 || c.Status.Nodes[1].Phase != dstorev1.NodeMember {
+		t.Fatalf("status taken from the stray: %+v", c.Status)
+	}
+	if h.ticketHas(0) || !h.ticketHas(1) || !h.ticketHas(2) {
+		t.Fatal("ticket names the stray or misses a member")
+	}
+	if h.fd.cluster.tokens != tokens || h.hasSecret("demo-node-0-join") {
+		t.Fatal("join started for the stray")
+	}
+}
+
+// TestRecordPrefersRealCluster: an operator upgraded over a cluster whose
+// node 0 already strayed records the cluster the other nodes belong to.
+func TestRecordPrefersRealCluster(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	c := h.cluster()
+	orig := c.DeepCopy()
+	c.Status.ClusterID = ""
+	if err := h.c.Status().Patch(context.Background(), c, client.MergeFrom(orig)); err != nil {
+		t.Fatal(err)
+	}
+	h.stray(0)
+	tokens := h.fd.cluster.tokens
+	h.step()
+	if got := h.cluster().Status.ClusterID; got != hex.EncodeToString([]byte("c")) {
+		t.Fatalf("recorded %q", got)
+	}
+	if h.fd.cluster.tokens != tokens {
+		t.Fatal("join started in the recording pass")
+	}
+	// Node 0 restarts once with role join; once it answers again it is
+	// told apart, and at no point is it joined.
+	for i := 0; h.cluster().Status.Nodes[0].Phase != dstorev1.NodeForeign; i++ {
+		if i == 5 {
+			t.Fatalf("node 0 phase %q", h.cluster().Status.Nodes[0].Phase)
+		}
+		h.step()
+		if h.fd.cluster.tokens != tokens {
+			t.Fatal("join started for the stray")
+		}
+	}
+}
+
+// TestRejoinAfterRemoval: a node whose store was lost and whose old entry
+// was removed (dstore node remove --dead) runs but is no member; the
+// operator joins it again with a fresh token and restarts its pod so the
+// entrypoint sees the join Secret.
+func TestRejoinAfterRemoval(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-node-1-x", Namespace: "ns", Labels: nodeLabels(h.cluster(), 1)}}
+	if err := h.c.Create(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	h.fd.cluster.removed = []view.NodeID{h.nodeID(1)}
+	h.fd.cluster.commitRemove()
+	tokens := h.fd.cluster.tokens
+	h.step()
+	if h.fd.cluster.tokens != tokens+1 || !h.hasSecret("demo-node-1-join") {
+		t.Fatalf("no rejoin: tokens %d, secret %v", h.fd.cluster.tokens-tokens, h.hasSecret("demo-node-1-join"))
+	}
+	var p corev1.Pod
+	if err := h.c.Get(context.Background(), client.ObjectKeyFromObject(pod), &p); err == nil {
+		t.Fatal("pod not restarted")
+	}
+	if got := h.cluster().Status.Phase; got != dstorev1.PhaseJoining {
+		t.Fatalf("phase %q", got)
+	}
+	// Waiting for the join: no second token.
+	h.step()
+	if h.fd.cluster.tokens != tokens+1 {
+		t.Fatal("second token while the rejoin runs")
+	}
+	h.fd.cluster.addMember(h.nodeID(1))
+	h.step()
+	if h.hasSecret("demo-node-1-join") || h.cluster().Status.Phase != dstorev1.PhaseReady {
+		t.Fatalf("rejoin not finished: %+v", h.cluster().Status)
 	}
 }

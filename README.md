@@ -32,7 +32,10 @@ The join dance (dstore's §8.1) is driven from the operator, which talks
 to the cluster through the dstore client library over iroh:
 
 1. node 0 starts with role `init`: on a fresh store its entrypoint runs
-   `dstore cluster init` and then `dstore serve`;
+   `dstore cluster init` and then `dstore serve`. Once the operator has
+   reached it, it records the cluster's id in `status.clusterID` and node
+   0 is switched to role `join` like every other node (one restart), so
+   a node 0 that loses its store never creates a second cluster;
 2. once node 0 is available the operator dials it, asks it for a
    single-use join token, writes the token and a bootstrap ticket into a
    `<cluster>-node-<i>-join` Secret, and starts node *i* with role
@@ -45,6 +48,31 @@ to the cluster through the dstore client library over iroh:
    joins, when the catalog goes from one voter to three in one step;
 4. a store that already belongs to a cluster just serves on restart, so
    roles only matter for the first start.
+
+The operator talks only to the recorded cluster: a node that answers for
+another cluster (one whose store was wiped while an older operator still
+gave node 0 role `init`) is reported with phase `Foreign`, the cluster
+phase is `Degraded`, and the node is left out of the ticket.
+
+### Replacing a node's store
+
+A node whose volume is lost or wiped is still listed in the view, and
+its catalog vote can no longer be trusted, so it is not taken back as
+it is. Remove its old entry through any other member, then wipe its
+store (delete its `<cluster>-node-<i>-store` claim and its pod); the
+operator recreates the claim, sees a running node that is neither a
+member nor joining, and joins it again under the same identity with a
+fresh token, after which the survivors copy its share of the data back:
+
+```
+dstore node remove --dead --ticket <ids of the other members> <node id>
+kubectl -n <ns> delete pvc <cluster>-node-<i>-store --wait=false
+kubectl -n <ns> delete pod -l dstore.amber-store.io/cluster=<cluster>,dstore.amber-store.io/node=<i>
+```
+
+With three voters `node remove --dead` needs `--allow-unsafe`, as it
+leaves two voters (both must stay up) until the node's join adds its
+vote back.
 
 Scaling `spec.nodes` down removes the highest-index node through
 `node remove` (data moves to the survivors, then its vote is removed) and
@@ -72,9 +100,10 @@ would otherwise reuse the old volumes and identities. With
 and go with it.
 
 `status` reports the phase (`Bootstrapping`, `Joining`, `Ready`,
-`ScalingDown`), the cluster ticket clients can use, the epoch, member and
-voter counts, the running transition, and each node's id, address and
-phase.
+`ScalingDown`, `Degraded`), the cluster id, the cluster ticket clients
+can use, the epoch, member and voter counts, the running transition, and
+each node's id, address and phase (`Pending`, `Joining`, `Member`,
+`Foreign`).
 
 ## Install with Helm
 
