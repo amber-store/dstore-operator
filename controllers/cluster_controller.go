@@ -74,6 +74,7 @@ type nodeInfo struct {
 	settled bool   // Deployment has observed its spec and its new pod is available
 	exists  bool   // Deployment exists
 	joining bool   // a join Secret exists
+	role    string // DSTORE_ROLE of the existing Deployment
 }
 
 // addrs returns the node's dial addresses, host IP first.
@@ -161,7 +162,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.requeue(), nil
 	}
 	if !n0.exists {
-		if _, err := r.ensureNode(ctx, &c, n0, nodeRole(&c, 0)); err != nil {
+		if _, err := r.ensureNode(ctx, &c, n0, nodeRole(&c, n0)); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else if err := r.rollout(ctx, &c, infos); err != nil {
@@ -245,11 +246,16 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if in.addr == "" {
 			continue
 		}
-		// A node that runs but is neither a member nor joining lost its
+		// A node that exists but is neither a member nor joining lost its
 		// store after its old entry was removed (dstore node remove
-		// --dead): it joins again, under the same identity, like a new
-		// node.
+		// --dead): its entrypoint finds neither a cluster nor a join
+		// Secret and exits, and it joins again, under the same identity,
+		// like a new node. A node that is up serves some other store (a
+		// stray cluster, or one it was removed from): it is left alone.
 		rejoin := in.exists
+		if rejoin && in.ready {
+			continue
+		}
 		reply, err := cl.Admin(ctx, node.AdminRequest{Op: "token-create"})
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("token for node %d: %w", in.index, err)
@@ -338,7 +344,7 @@ func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreClust
 		if !in.exists || in.index >= c.Spec.Nodes {
 			continue
 		}
-		changed, err := r.ensureNode(ctx, c, in, nodeRole(c, in.index))
+		changed, err := r.ensureNode(ctx, c, in, nodeRole(c, in))
 		if err != nil {
 			return err
 		}
@@ -353,18 +359,24 @@ func (r *ClusterReconciler) rollout(ctx context.Context, c *dstorev1.DstoreClust
 	return nil
 }
 
-// dialCluster dials the running members and returns a handle on the
-// recorded cluster. The first member to answer usually speaks for it;
-// when it does not (a node that lost its store and bootstrapped a
-// cluster of its own under its old identity, say), each member is dialed
-// alone and those answering for another cluster are returned as
-// foreign. Before the cluster is recorded, the view taken is the one
-// listing the most existing nodes, so that the operator never adopts
-// such a stray cluster over the real one.
+// dialCluster dials each running member alone and returns a handle on
+// the recorded cluster, with the members that answer for another one (a
+// node that lost its store and bootstrapped a cluster of its own under its
+// old identity, say) as foreign. Every member is asked, as any of them may
+// be the stray whichever answers first. Before the cluster is recorded,
+// the view taken is the one listing the most existing nodes, so that the
+// operator never adopts such a stray cluster over the real one.
 func (r *ClusterReconciler) dialCluster(ctx context.Context, c *dstorev1.DstoreCluster, infos map[int32]*nodeInfo, members []Member) (Cluster, map[view.NodeID]bool, error) {
 	want := c.Status.ClusterID
-	// listed counts the existing nodes a view lists.
-	listed := func(v *view.View) int {
+	// score ranks a view: -1 is another cluster's; before the cluster is
+	// recorded, the number of existing nodes it lists.
+	score := func(v *view.View) int {
+		if want != "" {
+			if hex.EncodeToString(v.ClusterID) != want {
+				return -1
+			}
+			return 1
+		}
 		n := 0
 		for _, in := range infos {
 			if _, ok := v.Node(in.id); ok && in.exists && in.index < c.Spec.Nodes {
@@ -373,36 +385,14 @@ func (r *ClusterReconciler) dialCluster(ctx context.Context, c *dstorev1.DstoreC
 		}
 		return n
 	}
-	existing := 0
-	for _, in := range infos {
-		if in.exists && in.index < c.Spec.Nodes {
-			existing++
-		}
-	}
-	// score ranks a view: -1 is another cluster's.
-	score := func(v *view.View) int {
-		if want != "" {
-			if hex.EncodeToString(v.ClusterID) != want {
-				return -1
-			}
-			return 1
-		}
-		return listed(v)
-	}
-	cl, err := r.Dialer.Dial(ctx, members)
-	if err != nil {
-		return nil, nil, err
-	}
-	if v := cl.View(); v != nil && (want != "" && score(v) > 0 || want == "" && listed(v) == existing) {
-		return cl, nil, nil
-	}
-	cl.Close()
 	foreign := map[view.NodeID]bool{}
 	var best Cluster
 	bestScore := -1
+	var lastErr error
 	for _, m := range members {
 		one, err := r.Dialer.Dial(ctx, []Member{m})
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		v := one.View()
@@ -423,13 +413,15 @@ func (r *ClusterReconciler) dialCluster(ctx context.Context, c *dstorev1.DstoreC
 		}
 		one.Close()
 	}
-	if best == nil {
-		if want != "" {
-			return nil, nil, fmt.Errorf("no running node answers for cluster %s", want)
-		}
-		return nil, nil, fmt.Errorf("no running node answered")
+	switch {
+	case best != nil:
+		return best, foreign, nil
+	case len(foreign) > 0:
+		return nil, nil, fmt.Errorf("no running node answers for cluster %s", want)
+	case lastErr != nil:
+		return nil, nil, lastErr
 	}
-	return best, foreign, nil
+	return nil, nil, fmt.Errorf("no running node answered")
 }
 
 // restartNode deletes node i's pod so that its Deployment starts a new
@@ -578,6 +570,13 @@ func (r *ClusterReconciler) observeDeployment(ctx context.Context, c *dstorev1.D
 	}
 	in.exists = true
 	in.ready = d.Status.AvailableReplicas > 0
+	for _, ct := range d.Spec.Template.Spec.Containers {
+		for _, e := range ct.Env {
+			if e.Name == "DSTORE_ROLE" {
+				in.role = e.Value
+			}
+		}
+	}
 	replicas := int32(1)
 	if d.Spec.Replicas != nil {
 		replicas = *d.Spec.Replicas

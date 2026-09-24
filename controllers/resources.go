@@ -40,14 +40,16 @@ const (
 	RoleJoin = "join"
 )
 
-// nodeRole is the role node i starts with on a fresh store: node 0
+// nodeRole is the role a node starts with on a fresh store: node 0
 // creates the cluster until the operator has recorded its id, every
 // other node joins it. A store that is already a member ignores the
 // role and just serves. Once the cluster exists node 0 joins too, so a
 // node 0 whose store was lost can never create a second cluster under
-// its old identity.
-func nodeRole(c *dstorev1.DstoreCluster, i int32) string {
-	if i == 0 && c.Status.ClusterID == "" {
+// its old identity. A Deployment that already joins keeps joining: the
+// cluster object read in a pass may predate the status write that
+// recorded the id, and must not switch node 0 back.
+func nodeRole(c *dstorev1.DstoreCluster, in *nodeInfo) string {
+	if in.index == 0 && c.Status.ClusterID == "" && in.role != RoleJoin {
 		return RoleInit
 	}
 	return RoleJoin
