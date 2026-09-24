@@ -60,9 +60,12 @@ A node whose volume is lost or wiped is still listed in the view, and
 its catalog vote can no longer be trusted, so it is not taken back as
 it is. Remove its old entry through any other member, then wipe its
 store (delete its `<cluster>-node-<i>-store` claim and its pod); the
-operator recreates the claim, sees a running node that is neither a
-member nor joining, and joins it again under the same identity with a
-fresh token, after which the survivors copy its share of the data back:
+operator recreates the claim. The new pod finds neither a cluster nor
+a join Secret and exits; the operator sees a node that is down and
+neither a member nor joining, and joins it again under the same identity
+with a fresh token, after which the survivors copy its share of the
+data back. A node that is up but no member (still serving a stray
+cluster, say) is left alone:
 
 ```
 dstore node remove --dead --ticket <ids of the other members> <node id>

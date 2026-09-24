@@ -130,6 +130,9 @@ type harness struct {
 	fd  *fakeDialer
 	key types.NamespacedName
 	ips int
+	// down keeps a node's pod unavailable, as a node whose entrypoint
+	// exits (a wiped store with no join Secret) is.
+	down map[int32]bool
 }
 
 func newHarness(t *testing.T, nodes int32) *harness {
@@ -199,6 +202,11 @@ func (h *harness) step() {
 	for i := range deps.Items {
 		d := &deps.Items[i]
 		st := &d.Status
+		if h.down[deploymentIndex(d)] {
+			st.ObservedGeneration, st.Replicas, st.UpdatedReplicas, st.AvailableReplicas = d.Generation, 1, 1, 0
+			_ = h.c.Status().Update(context.Background(), d)
+			continue
+		}
 		switch {
 		case st.ObservedGeneration == 0:
 			st.ObservedGeneration, st.Replicas, st.UpdatedReplicas, st.AvailableReplicas = d.Generation, 1, 1, 1
@@ -739,6 +747,29 @@ func TestRequeueWhileTransitionPending(t *testing.T) {
 	}
 }
 
+// setDown takes node i's pod down at once (or brings it back at the next
+// step when down is false).
+func (h *harness) setDown(i int32, down bool) {
+	h.t.Helper()
+	if h.down == nil {
+		h.down = map[int32]bool{}
+	}
+	h.down[i] = down
+	if down {
+		d := h.deployment(i)
+		d.Status.AvailableReplicas = 0
+		if err := h.c.Status().Update(context.Background(), d); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+func deploymentIndex(d *appsv1.Deployment) int32 {
+	var i int32
+	fmt.Sscanf(d.Labels[LabelNode], "%d", &i)
+	return i
+}
+
 // stray makes node i answer for a one-node cluster of its own, as node 0
 // does after its store is wiped and it bootstraps again.
 func (h *harness) stray(i int32) {
@@ -860,6 +891,7 @@ func TestRejoinAfterRemoval(t *testing.T) {
 	}
 	h.fd.cluster.removed = []view.NodeID{h.nodeID(1)}
 	h.fd.cluster.commitRemove()
+	h.setDown(1, true)
 	tokens := h.fd.cluster.tokens
 	h.step()
 	if h.fd.cluster.tokens != tokens+1 || !h.hasSecret("demo-node-1-join") {
@@ -877,9 +909,73 @@ func TestRejoinAfterRemoval(t *testing.T) {
 	if h.fd.cluster.tokens != tokens+1 {
 		t.Fatal("second token while the rejoin runs")
 	}
+	h.setDown(1, false)
 	h.fd.cluster.addMember(h.nodeID(1))
 	h.step()
 	if h.hasSecret("demo-node-1-join") || h.cluster().Status.Phase != dstorev1.PhaseReady {
 		t.Fatalf("rejoin not finished: %+v", h.cluster().Status)
+	}
+}
+
+// TestStaleStatusKeepsJoin: a pass may read the cluster object from before
+// the status write that recorded the cluster; node 0, already joining,
+// must not be switched back to init (which restarts it each time).
+func TestStaleStatusKeepsJoin(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	h.step()
+	h.step()
+	if role := h.env(0)["DSTORE_ROLE"].Value; role != RoleJoin {
+		t.Fatalf("node 0 role %q", role)
+	}
+	gen := h.deployment(0).Generation
+	c := h.cluster()
+	orig := c.DeepCopy()
+	c.Status.ClusterID = ""
+	if err := h.c.Status().Patch(context.Background(), c, client.MergeFrom(orig)); err != nil {
+		t.Fatal(err)
+	}
+	h.step()
+	if role := h.env(0)["DSTORE_ROLE"].Value; role != RoleJoin || h.deployment(0).Generation != gen {
+		t.Fatalf("node 0 switched back: role %q, generation %d -> %d", role, gen, h.deployment(0).Generation)
+	}
+}
+
+// TestStrayNotFirst: a stray is found whichever node answers first.
+func TestStrayNotFirst(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	h.stray(2)
+	h.step()
+	c := h.cluster()
+	if c.Status.Nodes[2].Phase != dstorev1.NodeForeign || c.Status.Phase != dstorev1.PhaseDegraded || h.ticketHas(2) {
+		t.Fatalf("status %+v", c.Status)
+	}
+}
+
+// TestStrayAfterRemovalNotRejoined: once a stray's old entry is removed it
+// is no member, but it is up and serving its own cluster; it stays Foreign
+// and is not joined until its store is wiped (and its pod stops coming up).
+func TestStrayAfterRemovalNotRejoined(t *testing.T) {
+	h := newHarness(t, 3)
+	h.ready(3)
+	h.stray(0)
+	h.fd.cluster.removed = []view.NodeID{h.nodeID(0)}
+	h.fd.cluster.commitRemove()
+	tokens := h.fd.cluster.tokens
+	h.step()
+	h.step()
+	if h.fd.cluster.tokens != tokens || h.hasSecret("demo-node-0-join") {
+		t.Fatal("join started for a stray that is up")
+	}
+	if got := h.cluster().Status.Nodes[0].Phase; got != dstorev1.NodeForeign {
+		t.Fatalf("node 0 phase %q", got)
+	}
+	// Its store is wiped: the pod no longer comes up, and it is joined.
+	delete(h.fd.strays, h.nodeID(0))
+	h.setDown(0, true)
+	h.step()
+	if h.fd.cluster.tokens != tokens+1 || !h.hasSecret("demo-node-0-join") {
+		t.Fatal("wiped node 0 not joined again")
 	}
 }
