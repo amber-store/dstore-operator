@@ -75,6 +75,9 @@ const (
 	NodeJoining  = "Joining"
 	NodeMember   = "Member"
 	NodeRemoving = "Removing"
+	// NodeForeign is a node that answers for another cluster than the
+	// one recorded in status.clusterID.
+	NodeForeign = "Foreign"
 )
 
 // NodeStatus is the state of one node.
@@ -92,11 +95,17 @@ const (
 	PhaseJoining       = "Joining"
 	PhaseReady         = "Ready"
 	PhaseScalingDown   = "ScalingDown"
+	// PhaseDegraded: a node answers for another cluster.
+	PhaseDegraded = "Degraded"
 )
 
 // DstoreClusterStatus is the observed state.
 type DstoreClusterStatus struct {
-	Phase              string             `json:"phase,omitempty"`
+	Phase string `json:"phase,omitempty"`
+	// ClusterID is the id (hex) of the cluster node 0 bootstrapped. Once
+	// it is set no node starts with role init again, and a node that
+	// answers for another cluster is reported as Foreign.
+	ClusterID          string             `json:"clusterID,omitempty"`
 	Ticket             string             `json:"ticket,omitempty"`
 	Epoch              uint64             `json:"epoch,omitempty"`
 	Members            int32              `json:"members,omitempty"`

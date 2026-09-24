@@ -41,10 +41,13 @@ const (
 )
 
 // nodeRole is the role node i starts with on a fresh store: node 0
-// creates the cluster, every other node joins it. A store that is
-// already a member ignores the role and just serves.
-func nodeRole(i int32) string {
-	if i == 0 {
+// creates the cluster until the operator has recorded its id, every
+// other node joins it. A store that is already a member ignores the
+// role and just serves. Once the cluster exists node 0 joins too, so a
+// node 0 whose store was lost can never create a second cluster under
+// its old identity.
+func nodeRole(c *dstorev1.DstoreCluster, i int32) string {
+	if i == 0 && c.Status.ClusterID == "" {
 		return RoleInit
 	}
 	return RoleJoin
